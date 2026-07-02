@@ -1,0 +1,22 @@
+from src.transformers.tiktok.bronze import TikTokBronzeTransformer
+from src.transformers.tiktok.enrich import TikTokEnrichTransformer
+from src.transformers.tiktok.gold import TikTokGoldTransformer
+from src.transformers.tiktok.silver import TikTokSilverTransformer
+
+TRANSFORMERS = {
+    "bronze": {"tiktok": TikTokBronzeTransformer},
+    "silver": {"tiktok": TikTokSilverTransformer},
+    "gold": {"tiktok": TikTokGoldTransformer},
+    "enrich": {"tiktok": TikTokEnrichTransformer},
+}
+
+PLATFORMS = ["tiktok"]
+
+__all__ = [
+    "TRANSFORMERS",
+    "PLATFORMS",
+    "TikTokBronzeTransformer",
+    "TikTokSilverTransformer",
+    "TikTokGoldTransformer",
+    "TikTokEnrichTransformer",
+]

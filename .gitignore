@@ -1,0 +1,59 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+.env.local
+*.env.local
+*.pem
+*.key
+credentials.json
+secrets.json
+
+# Infra data volumes (Docker bind mounts)
+infra/minio/minio_data/
+infra/airflow/postgres_data/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# Spark / Delta (local dev artifacts)
+metastore_db/
+spark-warehouse/
+derby.log
+hs_err_pid*.log
+
+# Logs
+*.log
+logs/
+
+# Docker local overrides
+docker-compose.override.yml
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Airbyte generated secrets (rendered from airbyte/secrets.yaml)
+airbyte/secrets.generated.yaml

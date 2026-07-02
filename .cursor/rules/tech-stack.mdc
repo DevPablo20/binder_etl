@@ -1,0 +1,114 @@
+---
+description: ETL tech stack versions, Docker Compose services, env vars, enrich practices, and development workflow
+alwaysApply: true
+---
+
+# Tech Stack
+
+Local medallion ETL: Airbyte extracts to MinIO, Spark transforms, Airflow orchestrates, enrich writes serving cache to backend Postgres. See [project-structure.mdc](mdc:.cursor/rules/project-structure.mdc) for layout.
+
+## Components
+
+| Component | Version / Choice | Role |
+|-----------|------------------|------|
+| Python | **3.11** | Local dev + Airflow container |
+| Java | **17** | Required by Spark |
+| Extract | **Airbyte** via `abctl` | External to compose; docs in `airbyte/README.md` |
+| Storage | **MinIO** | Buckets: `raw`, `bronze`, `silver`, `gold` |
+| Transform | **PySpark 3.5+** / **Delta Lake 3.x** | S3A config pointing at MinIO |
+| Orchestration | **Airflow 2.10.x** LocalExecutor | One DAG per platform, `@daily` schedule |
+| Backend Postgres | **PostgreSQL 15** | Bridge read + `serving.metrics_daily` write |
+| Spark JDBC | via `spark.read.jdbc` / `df.write.jdbc` | Enrich job cross-database I/O |
+| Dev infra | **Docker Compose** | MinIO, Postgres (Airflow meta), Airflow |
+| Tests | **pytest** | Smoke tests for Spark I/O and pipeline CLI |
+
+## Two Postgres Instances
+
+| Postgres | Compose file | Purpose |
+|----------|--------------|---------|
+| ETL `postgres` | `binder_etl` docker-compose | Airflow metadata only |
+| Backend `postgres_local` | `binder_app_backend` compose | Bridge + `serving.metrics_daily` |
+
+Enrich job connects to **backend Postgres** via `BINDER_DATABASE_URL`, not Airflow metadata DB.
+
+## Docker Compose Services (binder_etl)
+
+| Service | Default port | Role |
+|---------|--------------|------|
+| `minio` | 9000 / 9001 | Medallion object storage |
+| `minio-init` | — | Creates raw/bronze/silver/gold buckets |
+| `postgres` | internal | Airflow metadata DB |
+| `airflow-init` | — | DB migrate + admin user |
+| `airflow-webserver` | 8081 | Airflow UI |
+| `airflow-scheduler` | — | DAG execution |
+
+**Not in compose:** Airbyte (`abctl` on host), backend Postgres (separate stack).
+
+## Environment Variables
+
+Configure via `.env` (copy from `.env.example`):
+
+| Variable | Purpose |
+|----------|---------|
+| `MINIO_ENDPOINT` | `http://localhost:9000` (host) or `http://minio:9000` (containers) |
+| `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | MinIO credentials |
+| `BINDER_DATABASE_URL` | JDBC URL to backend Postgres (e.g. `postgresql://user:pass@localhost:55432/binder`) |
+| `SERVING_SCHEMA` | Default `serving` |
+| `ENRICH_MODE` | `full` (MVP: replace all platform rows) or `incremental` (replace yesterday only) |
+| `AIRFLOW_FERNET_KEY` | Encrypt Airflow connections |
+| `AIRFLOW_ADMIN_USER` / `AIRFLOW_ADMIN_PASSWORD` | Airflow UI login |
+| `ETL_STRICT` | `true` = fail on missing/empty sources; default warns and skips |
+
+## Practices
+
+### Extract (Airbyte)
+
+- Keep Airbyte **outside** docker-compose — run `abctl` on the host.
+- Land data to `raw/airbyte/{platform}/{stream}/` as Parquet.
+- MVP: manual sync; DAG `sync_raw` is a placeholder until `AirbyteTriggerSyncOperator` is wired.
+
+### Transform (Spark)
+
+- Pipeline CLI: `python -m src.pipelines.run {bronze|silver|gold|enrich} {platform}`.
+- Preserve Airbyte lineage: `_airbyte_raw_id`, `_airbyte_extracted_at`, `_airbyte_meta`.
+- Dedupe in bronze by natural keys from each platform's `tables.py`.
+
+### Enrich (Serving)
+
+- Runs **once daily** after `gold_{platform}` in the same DAG.
+- Reads gold Delta from MinIO + Bridge tables via JDBC (`platform_account`, `platform_object_map`, `client`).
+- Writes `serving.metrics_daily` in backend Postgres via JDBC.
+- Filter Bridge rows: `is_active = true` only.
+- `ENRICH_MODE=full`: replace all rows for platform (MVP default).
+- `ENRICH_MODE=incremental`: delete + insert yesterday's `date` only.
+- Re-running enrich without re-extracting picks up Bridge mapping changes from existing gold.
+
+### Orchestration (Airflow)
+
+- Invoke Spark via `BashOperator` calling the pipeline CLI.
+- DAG flow: `sync_raw → bronze_{platform} → silver_{platform} → gold_{platform} → enrich_{platform}`.
+- DAGs paused at creation; schedule `@daily`.
+
+### Dependencies
+
+- Split requirements: `requirements/spark.txt`, `requirements/airflow.txt`.
+- Local Spark runs need Java 17: `pip install -r requirements/spark.txt`.
+
+## Quick Reference
+
+```bash
+cp .env.example .env
+docker compose up -d
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements/spark.txt
+
+# Manual pipeline runs (host)
+MINIO_ENDPOINT=http://localhost:9000 python -m src.pipelines.run bronze tiktok
+MINIO_ENDPOINT=http://localhost:9000 python -m src.pipelines.run silver tiktok
+MINIO_ENDPOINT=http://localhost:9000 python -m src.pipelines.run gold tiktok
+BINDER_DATABASE_URL=postgresql://... python -m src.pipelines.run enrich tiktok
+
+pytest
+```
+
+See also: [domain-architecture.mdc](mdc:.cursor/rules/domain-architecture.mdc).

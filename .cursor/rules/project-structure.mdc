@@ -1,0 +1,101 @@
+---
+description: Directory layout, naming conventions, and checklist for adding new platforms
+alwaysApply: true
+---
+
+# Project Structure
+
+Simplified medallion ETL + serving layout. See [domain-architecture.mdc](mdc:.cursor/rules/domain-architecture.mdc) for data flow and [tech-stack.mdc](mdc:.cursor/rules/tech-stack.mdc) for versions.
+
+## Root Layout
+
+```
+binder_etl/
+├── .cursor/rules/           # Architecture rules (SSOT for agents)
+├── docker-compose.yaml      # MinIO + Postgres (Airflow meta) + Airflow
+├── .env.example
+├── requirements/
+│   ├── spark.txt
+│   └── airflow.txt
+├── airbyte/
+│   └── README.md            # abctl install + TikTok connection
+├── dags/
+│   └── tiktok/
+│       └── tiktok_daily.py  # sync_raw → bronze → silver → gold → enrich
+├── src/
+│   ├── config/settings.py   # MinIO + BINDER_DATABASE_URL
+│   ├── spark_session.py     # Spark + Delta + S3A
+│   ├── io/
+│   │   ├── reader.py        # Read Parquet/Delta from MinIO
+│   │   ├── writer.py        # Write Delta to MinIO
+│   │   └── postgres.py      # JDBC read Bridge + write serving
+│   ├── pipelines/
+│   │   └── run.py           # CLI: run {bronze|silver|gold|enrich} {platform}
+│   └── transformers/
+│       ├── base.py          # Thin shared base (one file)
+│       └── tiktok/
+│           ├── tables.py    # SSOT: streams, dedupe, join key contract
+│           ├── bronze.py
+│           ├── silver.py
+│           ├── gold.py
+│           └── enrich.py    # gold + Bridge → serving.metrics_daily
+├── infra/
+│   └── airflow/Dockerfile
+└── tests/
+    ├── test_spark_minio.py
+    └── test_pipeline.py
+```
+
+**Deferred:** `src/api/` — serving tables satisfy dashboard reads for MVP.
+
+**Backend follow-up:** `serving.metrics_daily` DDL in [binder_app_backend migrations](../binder_app_backend/src/system/database/migrations/); ETL owns enrich job only.
+
+## Naming Conventions
+
+| Item | Pattern | Example |
+|------|---------|---------|
+| Platform folder | lowercase slug | `tiktok`, `meta`, `google_ads` |
+| Airflow DAG id | `{platform}_daily` | `tiktok_daily` |
+| Airflow tasks | `{layer}_{platform}` | `bronze_tiktok`, `enrich_tiktok` |
+| Raw path | `airbyte/{platform}/{stream}/` | `airbyte/tiktok/campaigns/` |
+| Delta path | `{layer}/{platform}/{table}/` | `silver/tiktok/campaigns/` |
+| Enrich module | `src/transformers/{platform}/enrich.py` | `tiktok/enrich.py` |
+| Serving table | `serving.metrics_daily` | backend Postgres |
+| Pipeline CLI | `run {layer} {platform}` | `run enrich tiktok` |
+| Metadata SSOT | `src/transformers/{platform}/tables.py` | streams, dedupe, join keys |
+
+## Entry Points
+
+| File | Role |
+|------|------|
+| `src/pipelines/run.py` | CLI for bronze, silver, gold, enrich |
+| `src/spark_session.py` | Spark session with Delta + MinIO S3A |
+| `src/io/postgres.py` | JDBC helpers for Bridge read + serving write |
+| `src/transformers/{platform}/tables.py` | Platform metadata single source of truth |
+| `src/transformers/{platform}/enrich.py` | Gold + Bridge → serving cache |
+| `dags/{platform}/{platform}_daily.py` | Airflow orchestration |
+
+## Add a New Platform (Checklist)
+
+1. Create `src/transformers/{platform}/tables.py` with streams, raw paths, dedupe keys, join key contract
+2. Implement `bronze.py`, `silver.py`, `gold.py` extending shared `base.py`
+3. Normalize silver to canonical columns: `ad_account_id`, `campaign_id`, `ad_group_id`, `ad_id` (all strings)
+4. Implement `enrich.py` — join gold with Bridge, write `serving.metrics_daily`
+5. Add platform to `PLATFORMS` list in pipeline runner
+6. Create `dags/{platform}/{platform}_daily.py` with `enrich_{platform}` as final task
+7. Document Airbyte connection in `airbyte/README.md`
+8. Add smoke test under `tests/`
+
+Copy the TikTok folder pattern — do not refactor shared code unless duplication exceeds ~30 lines.
+
+## Simplification vs binder_data_hub
+
+| Area | binder_data_hub | binder_etl |
+|------|-----------------|------------|
+| Base classes | `base_bronze.py`, `base_silver.py`, `base_gold.py` | Single `base.py` |
+| Pipeline CLI | `run_layer` + legacy aliases | One `run.py` with enrich |
+| Serving | Not implemented | `enrich.py` → backend Postgres |
+| Query API | Full FastAPI catalog | Deferred (serving tables for MVP) |
+| Docker | Multiple Dockerfiles | Shared image where possible |
+
+`binder_data_hub` is inspiration only — do not copy its complexity.

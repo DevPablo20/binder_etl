@@ -77,23 +77,32 @@ MVP: trigger syncs manually in the Airbyte UI. The Airflow `sync_raw` task is a 
 
 ### 5. Run the pipeline
 
-Layers run in order. From the repo root with `.venv` active:
+From the repo root with `.venv` active:
 
 ```bash
 export MINIO_ENDPOINT=http://localhost:9000
 
+# All lake layers in one command (bronze → silver → gold)
+python -m src.pipelines.run medallion tiktok
+```
+
+Or run layers individually:
+
+```bash
 python -m src.pipelines.run bronze tiktok
 python -m src.pipelines.run silver tiktok
 python -m src.pipelines.run gold tiktok
 ```
 
-Enrich joins gold with Bridge metadata and writes `serving.metrics_daily`. Requires backend Postgres running and `BINDER_DATABASE_URL` set:
+The Airflow `tiktok_daily` DAG runs the same medallion chain (`sync_raw → bronze → silver → gold`) without enrich.
+
+Enrich is a separate step (not part of the medallion DAG). It joins gold with Bridge metadata and writes `serving.metrics_daily`. Requires backend Postgres running and `BINDER_DATABASE_URL` set:
 
 ```bash
 python -m src.pipelines.run enrich tiktok
 ```
 
-Or run the full chain via Airflow: enable the `tiktok_daily` DAG in the Airflow UI.
+Enable the `tiktok_daily` DAG in the Airflow UI to orchestrate the medallion chain on a schedule.
 
 ### 6. Tests
 

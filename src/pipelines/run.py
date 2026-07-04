@@ -1,29 +1,42 @@
 import sys
 
 from src.spark_session import get_spark_session
-from src.transformers import TRANSFORMERS
+from src.transformers import PLATFORMS, TRANSFORMERS
+
+MEDALLION_LAYERS = ("bronze", "silver", "gold")
+
+PIPELINE_LAYERS = ("medallion", *TRANSFORMERS)
+
+
+def _run_layer(layer: str, platform: str) -> None:
+    spark = get_spark_session(app_name=f"{layer}-{platform}")
+    transformer = TRANSFORMERS[layer][platform](spark)
+    transformer.run()
+    spark.stop()
+    print(f"{layer.capitalize()} completed for {platform}.")
 
 
 def main() -> None:
     layer = (sys.argv[1] if len(sys.argv) > 1 else "").strip().lower()
     platform = (sys.argv[2] if len(sys.argv) > 2 else "").strip().lower()
 
-    if not layer or layer not in TRANSFORMERS:
+    if not layer or layer not in PIPELINE_LAYERS:
         print("Usage: python -m src.pipelines.run <layer> <platform>")
-        print(f"Layers: {', '.join(TRANSFORMERS)}")
+        print(f"Layers: {', '.join(PIPELINE_LAYERS)}")
         sys.exit(1)
 
-    registry = TRANSFORMERS[layer]
-    if not platform or platform not in registry:
+    if not platform or platform not in PLATFORMS:
         print(f"Usage: python -m src.pipelines.run {layer} <platform>")
-        print(f"Platforms: {', '.join(registry)}")
+        print(f"Platforms: {', '.join(PLATFORMS)}")
         sys.exit(1)
 
-    spark = get_spark_session(app_name=f"{layer}-{platform}")
-    transformer = registry[platform](spark)
-    transformer.run()
-    spark.stop()
-    print(f"{layer.capitalize()} completed for {platform}.")
+    if layer == "medallion":
+        for lake_layer in MEDALLION_LAYERS:
+            _run_layer(lake_layer, platform)
+        print(f"Medallion completed for {platform}.")
+        return
+
+    _run_layer(layer, platform)
 
 
 if __name__ == "__main__":

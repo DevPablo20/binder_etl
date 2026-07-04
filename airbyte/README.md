@@ -81,7 +81,7 @@ Configure manually in the Airbyte UI after install.
 ### Destination
 
 - Connector: **S3** (S3-compatible / MinIO)
-- **Endpoint:** `http://host.docker.internal:9000` (or host LAN IP if `host.docker.internal` is unavailable)
+- **Endpoint:** `http://172.17.0.1:9000` (Docker bridge gateway — works reliably from abctl/kind on Linux). Fallbacks: `http://host.docker.internal:9000` or your host LAN IP if the gateway IP differs (`ip route | grep docker0`).
 - **Bucket:** `raw`
 - **Path format:** `airbyte/tiktok/{stream}`
 - **Format:** Parquet

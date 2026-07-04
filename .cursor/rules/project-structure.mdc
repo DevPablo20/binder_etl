@@ -35,10 +35,13 @@ binder_etl/
 │       ├── base.py          # Thin shared base (one file)
 │       └── tiktok/
 │           ├── tables.py    # SSOT: streams, dedupe, join key contract
-│           ├── bronze.py
+│           ├── bronze.py    # layer orchestrator (I/O + ETL_STRICT)
 │           ├── silver.py
 │           ├── gold.py
-│           └── enrich.py    # gold + Bridge → serving.metrics_daily
+│           ├── enrich.py    # gold + Bridge → serving.metrics_daily
+│           └── transforms/  # pure DataFrame logic (no SparkSession)
+│               ├── silver/  # one module per stream + SILVER_TRANSFORMS registry
+│               └── gold/    # one module per fact + GOLD_TRANSFORMS registry
 ├── infra/
 │   └── airflow/Dockerfile
 └── tests/
@@ -63,6 +66,18 @@ binder_etl/
 | Serving table | `serving.metrics_daily` | backend Postgres |
 | Pipeline CLI | `run {layer} {platform}` | `run enrich tiktok` |
 | Metadata SSOT | `src/transformers/{platform}/tables.py` | streams, dedupe, join keys |
+| Silver transforms | `src/transformers/{platform}/transforms/silver/{stream}.py` | column renames + casts |
+| Gold transforms | `src/transformers/{platform}/transforms/gold/{fact}.py` | joins + business grain |
+
+## Layer vs Transform Split
+
+| File kind | Location | Responsibility |
+|-----------|----------|----------------|
+| Orchestrator | `{platform}/bronze.py`, `silver.py`, `gold.py`, `enrich.py` | MinIO I/O, loop streams/facts, ETL_STRICT |
+| Metadata | `{platform}/tables.py` | paths, dedupe keys, gold fact config, Bridge join keys |
+| Transforms | `{platform}/transforms/{layer}/` | pure `DataFrame → DataFrame` (or gold: `SparkSession + config → DataFrame`) |
+
+Bronze has no transform modules — dedupe is generic via `base.dedupe()` + `tables.py` keys.
 
 ## Entry Points
 
@@ -78,13 +93,14 @@ binder_etl/
 ## Add a New Platform (Checklist)
 
 1. Create `src/transformers/{platform}/tables.py` with streams, raw paths, dedupe keys, join key contract
-2. Implement `bronze.py`, `silver.py`, `gold.py` extending shared `base.py`
-3. Normalize silver to canonical columns: `ad_account_id`, `campaign_id`, `ad_group_id`, `ad_id` (all strings)
-4. Implement `enrich.py` — join gold with Bridge, write `serving.metrics_daily`
-5. Add platform to `PLATFORMS` list in pipeline runner
-6. Create `dags/{platform}/{platform}_daily.py` with `enrich_{platform}` as final task
-7. Document Airbyte connection in `airbyte/README.md`
-8. Add smoke test under `tests/`
+2. Implement `bronze.py`, `silver.py`, `gold.py` orchestrators extending shared `base.py`
+3. Add silver transforms under `transforms/silver/` (one file per stream) and gold under `transforms/gold/` (one file per fact)
+4. Normalize silver to canonical columns: `ad_account_id`, `campaign_id`, `ad_group_id`, `ad_id` (all strings)
+5. Implement `enrich.py` — join gold with Bridge, write `serving.metrics_daily`
+6. Add platform to `PLATFORMS` list in pipeline runner
+7. Create `dags/{platform}/{platform}_daily.py` with `enrich_{platform}` as final task
+8. Document Airbyte connection in `airbyte/README.md`
+9. Add smoke test under `tests/`
 
 Copy the TikTok folder pattern — do not refactor shared code unless duplication exceeds ~30 lines.
 

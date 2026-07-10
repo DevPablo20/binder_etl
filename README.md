@@ -57,6 +57,23 @@ Check status:
 docker compose ps
 ```
 
+### Spark Dev (optional)
+
+For exploring raw MinIO data and prototyping transformers before promoting them into `src/transformers/`, start the profile-gated Spark container:
+
+```bash
+docker compose --profile dev up -d --build spark-dev
+```
+
+Write scratch scripts under `dev/sandbox/` (gitignored) and run them inside the container:
+
+```bash
+docker compose exec spark-dev python dev/examples/inspect_raw_stream.py airbyte/tiktok/ads
+docker compose exec spark-dev python dev/sandbox/checkForGoogle.py
+```
+
+See [dev/README.md](dev/README.md) for the full inspect → promote workflow.
+
 ### 3. Python environment (host pipeline runs)
 
 Spark jobs can run on the host against MinIO at `http://localhost:9000`:
@@ -131,8 +148,9 @@ binder_etl/
 │   ├── pipelines/run.py   # CLI: run {bronze|silver|gold|enrich} {platform}
 │   ├── transformers/      # Per-platform medallion + enrich logic
 │   └── io/                # MinIO and Postgres I/O
+├── dev/                   # Spark sandbox for transformer exploration (profile: dev)
 ├── airbyte/               # abctl install docs + secrets template
-├── infra/                 # Airflow Dockerfile + local volume mounts
+├── infra/                 # Airflow + spark-dev Dockerfiles + local volume mounts
 └── tests/
 ```
 
@@ -153,11 +171,15 @@ The enrich job connects to backend Postgres via `BINDER_DATABASE_URL`.
 # Rebuild Airflow image after dependency changes
 docker compose up --build -d airflow-webserver airflow-scheduler
 
+# Spark Dev sandbox (transformer exploration)
+docker compose --profile dev up -d --build spark-dev
+docker compose exec spark-dev python dev/examples/inspect_raw_stream.py
+
 # View logs
 docker compose logs -f airflow-scheduler
 
-# Stop everything
-docker compose down
+# Stop everything (includes profile services if they were started)
+docker compose --profile dev down
 ```
 
 Local data volumes (`infra/minio/minio_data/`, `infra/airflow/postgres_data/`) are gitignored and persist across restarts.

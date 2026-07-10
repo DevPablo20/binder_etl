@@ -12,7 +12,7 @@ Simplified medallion ETL + serving layout. See [domain-architecture.mdc](mdc:.cu
 ```
 binder_etl/
 ├── .cursor/rules/           # Architecture rules (SSOT for agents)
-├── docker-compose.yaml      # MinIO + Postgres (Airflow meta) + Airflow
+├── docker-compose.yaml      # MinIO + Postgres (Airflow meta) + Airflow (+ spark-dev profile)
 ├── .env.example
 ├── requirements/
 │   ├── spark.txt
@@ -42,8 +42,12 @@ binder_etl/
 │           └── transforms/  # pure DataFrame logic (no SparkSession)
 │               ├── silver/  # one module per stream + SILVER_TRANSFORMS registry
 │               └── gold/    # one module per fact + GOLD_TRANSFORMS registry
+├── dev/                     # Dev-only Spark sandbox (not production code)
+│   ├── examples/            # Checked-in inspection templates
+│   └── sandbox/             # Personal scratch scripts (gitignored)
 ├── infra/
-│   └── airflow/Dockerfile
+│   ├── airflow/Dockerfile
+│   └── spark-dev/Dockerfile # Compose profile: dev
 └── tests/
     ├── test_spark_minio.py
     └── test_pipeline.py
@@ -89,6 +93,7 @@ Bronze has no transform modules — dedupe is generic via `base.dedupe()` + `tab
 | `src/transformers/{platform}/tables.py` | Platform metadata single source of truth |
 | `src/transformers/{platform}/enrich.py` | Gold + Bridge → serving cache |
 | `dags/{platform}/{platform}_daily.py` | Airflow orchestration |
+| `dev/` + Compose `spark-dev` (profile `dev`) | Dev-only sandbox for exploring lake data / prototyping transformers |
 
 ## Add a New Platform (Checklist)
 

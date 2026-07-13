@@ -64,7 +64,7 @@ TIKTOK_STREAMS: tuple[TikTokStream, ...] = (
         raw_path=f"{RAW_PREFIX}/ad_groups",
         dedupe_columns=("advertiser_id", "campaign_id", "adgroup_id"),
         bridge_mappings=(
-            BridgeMapping("ad_group_id", "platform_object_map.external_id (ad_set)"),
+            BridgeMapping("ad_group_id", "platform_object_map.external_id (ad_group)"),
         ),
     ),
     TikTokStream(
@@ -100,7 +100,7 @@ GOLD_FACTS: tuple[GoldFactConfig, ...] = (
         bridge_mappings=(
             BridgeMapping("ad_account_id", "platform_account.external_account_id"),
             BridgeMapping("campaign_id", "platform_object_map.external_id (campaign)"),
-            BridgeMapping("ad_group_id", "platform_object_map.external_id (ad_set)"),
+            BridgeMapping("ad_group_id", "platform_object_map.external_id (ad_group)"),
             BridgeMapping("ad_id", "platform_object_map.external_id (ad)"),
         ),
     ),

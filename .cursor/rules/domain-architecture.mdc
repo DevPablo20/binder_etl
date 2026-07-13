@@ -1,21 +1,21 @@
 ---
-description: Medallion ETL purpose, data flow, Bridge join contract, serving layer, and platform extensibility
+description: Medallion ETL purpose, FastAPI catalog API, Bridge join contract, and platform extensibility
 alwaysApply: true
 ---
 
 # Domain Architecture
 
-Internal ETL that extracts marketing platform data, transforms through medallion layers, enriches with backend Bridge metadata, and serves dashboards via Postgres. The backend ([binder_app_backend domain-architecture](../binder_app_backend/.cursor/rules/domain-architecture.mdc)) owns Bridge metadata; the lake stores facts; the serving cache stores enriched facts for fast reads.
+Internal ETL that extracts marketing platform data, transforms through medallion layers into MinIO, and exposes a FastAPI catalog for the backend to pull lake identities into Bridge discovery. The backend ([binder_app_backend domain-architecture](../binder_app_backend/.cursor/rules/domain-architecture.mdc)) owns Bridge metadata; the lake stores facts; dashboards join facts with Bridge later (deferred).
 
 ## Three-Zone Model
 
 | Zone | Owner | Responsibility |
 |------|-------|----------------|
 | Lake (raw → gold) | ETL / MinIO | Facts with platform-native IDs |
-| Bridge metadata | Backend Postgres | `ad_account_id` → `client_id`, `platform_id`, `company_id`; object maps → `binder_campaign_id` |
-| Serving cache | Backend Postgres (`serving` schema) | Gold facts + Binder metadata — **dashboards read this only** |
+| Catalog API | ETL FastAPI (`src/api/`) | Hierarchy identities from silver — feed for Bridge discovery |
+| Bridge metadata | Backend Postgres | Account + object maps (backend SSOT) |
 
-**Flow:** platforms → Airbyte → MinIO raw → Spark bronze/silver/gold → Spark enrich → `serving.metrics_daily` → backend GET dashboards.
+**Flow:** platforms → Airbyte → MinIO raw → Spark bronze/silver/gold; backend `GET` catalog from ETL FastAPI (built from silver after Spark init).
 
 ```mermaid
 flowchart LR
@@ -23,9 +23,11 @@ flowchart LR
     Raw --> Bronze["bronze/{platform}/{table}"]
     Bronze --> Silver["silver/{platform}/{table}"]
     Silver --> Gold["gold/{platform}/{fact}"]
-    Gold --> Enrich["enrich job"]
-    Bridge["Bridge Postgres"] --> Enrich
-    Enrich --> Serving["serving.metrics_daily"]
+    Silver --> CatalogBuild["catalog rows from silver"]
+    Lifespan["FastAPI lifespan"] --> SparkInit["init SparkSession"]
+    SparkInit --> CatalogAPI["FastAPI GET catalog"]
+    CatalogBuild --> CatalogAPI
+    Backend["backend Bridge discovery"] --> CatalogAPI
 ```
 
 ## Medallion Layers (MinIO)
@@ -41,7 +43,7 @@ flowchart LR
 
 - **Silver** — per-stream tables with column renames (`advertiser_id` → `ad_account_id`, etc.) and correct types (IDs as string, metrics numeric, dates typed).
 - **Gold** — join silver into `ads_daily_metrics` at **`ad_id + date`** grain.
-- **Enrich** — not a MinIO layer; Spark job joins gold with Bridge Postgres and writes `serving.metrics_daily`. Runs once daily after d-1 extraction.
+- **Catalog** — not a MinIO layer; FastAPI reads silver entity streams via Spark and returns hierarchy rows. Used for Bridge config / new campaigns (latency OK).
 
 ## Join Key Contract (ETL `BridgeMapping`)
 
@@ -51,34 +53,38 @@ flowchart LR
 |---------------|---------------|-------------|
 | `ad_account_id` | `platform_account.external_account_id` | — |
 | `campaign_id` | `platform_object_map.external_id` | `campaign` |
-| `ad_group_id` | `platform_object_map.external_id` | `ad_set` |
+| `ad_group_id` | `platform_object_map.external_id` | `ad_group` |
 | `ad_id` | `platform_object_map.external_id` | `ad` |
 
 Backend references: [platform-account.entity.ts](../binder_app_backend/src/bridge/platform-account.entity.ts), [platform-object-map.entity.ts](../binder_app_backend/src/bridge/platform-object-map.entity.ts).
 
-## Serving Layer
+## Catalog API (FastAPI)
 
-**Table:** `serving.metrics_daily` in backend Postgres. ETL writes via JDBC; NestJS reads directly (no MinIO at request time).
+Read-only HTTP catalog for backend Bridge discovery. **Async lifespan must initialize `SparkSession` before the app accepts traffic** — handlers need a ready session to read silver Delta from MinIO. Handlers may be async; Spark/MinIO work is sync and must run off the event loop (thread/process pool or equivalent).
 
-### Enrich join contract
+ETL does **not** write Bridge rows or `catalog.*` Postgres tables. Backend pulls catalog over HTTP.
 
-1. **Account:** `gold.ad_account_id = platform_account.external_account_id` scoped by `platform_id`.
-2. **Company:** `platform_account.client_id` → `client.company_id`.
-3. **Campaign (most-specific first):** `ad` → `ad_set` → `campaign` via `platform_object_map` on `(platform_account_id, object_type, external_id)`.
-4. **Unmapped rows:** write with `binder_campaign_id = NULL` — do not drop.
+### Sources (silver entities only)
 
-### `serving.metrics_daily` columns
+| Silver table | `object_type` |
+|--------------|---------------|
+| `{platform}/advertisers` (or accounts) | `account` |
+| `{platform}/campaigns` | `campaign` |
+| `{platform}/ad_groups` | `ad_group` |
+| `{platform}/ads` | `ad` |
 
-| Column group | Examples |
-|--------------|----------|
-| Grain | `date`, `platform_id`, `ad_id` |
-| Platform traceability | `ad_account_id`, `campaign_id`, `ad_group_id` |
-| Binder dimensions | `company_id`, `client_id`, `binder_campaign_id` |
-| Optional media | `channel_id`, `buying_type_id`, `format_id`, `sub_format_id` |
-| Metrics | `spend`, `impressions`, `clicks`, `conversions`, … |
-| Audit | `enriched_at` |
+### Response contract
 
-DDL lives in backend migrations; ETL owns the enrich job only.
+| Field | Nullability |
+|-------|-------------|
+| `platform` | always (from transformer / platform slug, not a silver column) |
+| `object_type` | `account` \| `campaign` \| `ad_group` \| `ad` |
+| `account_id` / `account_name` | never null |
+| `campaign_id` / `campaign_name` | null only if `object_type = account` |
+| `ad_group_id` / `ad_group_name` | null only if `object_type` in (`account`, `campaign`) |
+| `ad_id` / `ad_name` | null only if `object_type` in (`account`, `campaign`, `ad_group`) |
+
+GET catalog endpoint(s) consumed by backend; platform slug comes from the transformers path/name.
 
 ## TikTok MVP
 
@@ -93,14 +99,15 @@ DDL lives in backend migrations; ETL owns the enrich job only.
 | `adgroup_id` | `ad_group_id` |
 | `ad_id` | `ad_id` |
 
-TikTok "ad group" maps to Bridge object type **`ad_set`**. Metadata SSOT: `src/transformers/tiktok/tables.py`.
+TikTok "ad group" maps to Bridge object type **`ad_group`**. Metadata SSOT: `src/transformers/tiktok/tables.py`.
 
 ## Platform Extensibility
 
-1. `src/transformers/{platform}/tables.py` — streams, dedupe keys, join key contract
-2. `{bronze,silver,gold,enrich}.py` — layer transformers
-3. `dags/{platform}/{platform}_daily.py` — DAG ending with `enrich_{platform}`
-4. Register in `PLATFORMS` list
+1. `src/transformers/{platform}/tables.py` — streams, dedupe keys, join key contract, catalog entities
+2. `{bronze,silver,gold}.py` — medallion layer transformers
+3. `transforms/catalog/` — silver → catalog API row shape
+4. `dags/{platform}/{platform}_daily.py` — DAG ending at `gold_{platform}`
+5. Register in `PLATFORMS` list; catalog API serves all registered platforms
 
 ## Layer Boundaries
 
@@ -108,14 +115,15 @@ TikTok "ad group" maps to Bridge object type **`ad_set`**. Metadata SSOT: `src/t
 |------|--------|
 | Do **not** store Binder business entities in MinIO | Business spine lives in Postgres |
 | Do **not** write Bridge rows from ETL | Bridge is backend SSOT |
-| ETL **may write** `serving.*` in backend Postgres | Serving is materialized cache |
-| Backend **must not** join MinIO on HTTP requests | Reads `serving.metrics_daily` only |
+| Backend **pulls** catalog via ETL FastAPI | Catalog is lake identity feed for discovery |
+| Backend **must not** join MinIO on HTTP requests | Lake I/O stays in ETL |
 | Cast platform IDs to **string** in silver | Matches Bridge `varchar(255)` |
 | Preserve Airbyte lineage cols | `_airbyte_raw_id`, `_airbyte_extracted_at`, `_airbyte_meta` |
 
 ## Deferred
 
-- Async/query API (`src/api/`) — serving tables satisfy dashboard reads for MVP
+- Bridge discovery CRUD / NestJS APIs (backend)
+- Facts / dashboard Postgres serving (facts ⋈ Bridge)
 - Automated Airbyte trigger in Airflow (manual `abctl` sync for MVP)
 
 See also: [tech-stack.mdc](mdc:.cursor/rules/tech-stack.mdc), [project-structure.mdc](mdc:.cursor/rules/project-structure.mdc).

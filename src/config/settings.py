@@ -21,9 +21,6 @@ class Settings:
     bucket_silver: str = _get("MINIO_BUCKET_SILVER", "silver")
     bucket_gold: str = _get("MINIO_BUCKET_GOLD", "gold")
 
-    binder_database_url: str = _get("BINDER_DATABASE_URL", "")
-    serving_schema: str = _get("SERVING_SCHEMA", "serving")
-    enrich_mode: str = _get("ENRICH_MODE", "full")
     etl_strict: bool = _get("ETL_STRICT", "false").lower() in ("true", "1", "yes")
 
     def bucket_for_layer(self, layer: str) -> str:

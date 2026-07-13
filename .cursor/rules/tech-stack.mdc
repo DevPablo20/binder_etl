@@ -1,11 +1,11 @@
 ---
-description: ETL tech stack versions, Docker Compose services, env vars, enrich practices, and development workflow
+description: ETL tech stack versions, Docker Compose services, env vars, catalog API practices, and development workflow
 alwaysApply: true
 ---
 
 # Tech Stack
 
-Local medallion ETL: Airbyte extracts to MinIO, Spark transforms, Airflow orchestrates, enrich writes serving cache to backend Postgres. See [project-structure.mdc](mdc:.cursor/rules/project-structure.mdc) for layout.
+Local medallion ETL: Airbyte extracts to MinIO, Spark transforms, Airflow orchestrates, FastAPI serves catalog for backend Bridge discovery. See [project-structure.mdc](mdc:.cursor/rules/project-structure.mdc) for layout.
 
 ## Components
 
@@ -17,8 +17,8 @@ Local medallion ETL: Airbyte extracts to MinIO, Spark transforms, Airflow orches
 | Storage | **MinIO** | Buckets: `raw`, `bronze`, `silver`, `gold` |
 | Transform | **PySpark 3.5+** / **Delta Lake 3.x** | S3A config pointing at MinIO |
 | Orchestration | **Airflow 2.10.x** LocalExecutor | One DAG per platform, `@daily` schedule |
-| Backend Postgres | **PostgreSQL 15** | Bridge read + `serving.metrics_daily` write |
-| Spark JDBC | via `spark.read.jdbc` / `df.write.jdbc` | Enrich job cross-database I/O |
+| Catalog API | **FastAPI** + uvicorn | Read-only catalog from silver; async lifespan inits Spark |
+| Backend Postgres | **PostgreSQL 15** | Bridge metadata (separate stack; backend owns) |
 | Dev infra | **Docker Compose** | MinIO, Postgres (Airflow meta), Airflow |
 | Tests | **pytest** | Smoke tests for Spark I/O and pipeline CLI |
 
@@ -27,9 +27,9 @@ Local medallion ETL: Airbyte extracts to MinIO, Spark transforms, Airflow orches
 | Postgres | Compose file | Purpose |
 |----------|--------------|---------|
 | ETL `postgres` | `binder_etl` docker-compose | Airflow metadata only |
-| Backend `postgres_local` | `binder_app_backend` compose | Bridge + `serving.metrics_daily` |
+| Backend `postgres_local` | `binder_app_backend` compose | Bridge (backend SSOT) |
 
-Enrich job connects to **backend Postgres** via `BINDER_DATABASE_URL`, not Airflow metadata DB.
+ETL does **not** write to backend Postgres for catalog — backend pulls catalog over HTTP.
 
 ## Docker Compose Services (binder_etl)
 
@@ -42,7 +42,7 @@ Enrich job connects to **backend Postgres** via `BINDER_DATABASE_URL`, not Airfl
 | `airflow-webserver` | 8081 | Airflow UI |
 | `airflow-scheduler` | — | DAG execution |
 
-**Not in compose:** Airbyte (`abctl` on host), backend Postgres (separate stack).
+**Not in compose:** Airbyte (`abctl` on host), backend Postgres (separate stack), FastAPI catalog (run on host / later service).
 
 ## Environment Variables
 
@@ -52,9 +52,6 @@ Configure via `.env` (copy from `.env.example`):
 |----------|---------|
 | `MINIO_ENDPOINT` | `http://localhost:9000` (host) or `http://minio:9000` (containers) |
 | `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | MinIO credentials |
-| `BINDER_DATABASE_URL` | JDBC URL to backend Postgres (e.g. `postgresql://user:pass@localhost:55432/binder`) |
-| `SERVING_SCHEMA` | Default `serving` |
-| `ENRICH_MODE` | `full` (MVP: replace all platform rows) or `incremental` (replace yesterday only) |
 | `AIRFLOW_FERNET_KEY` | Encrypt Airflow connections |
 | `AIRFLOW_ADMIN_USER` / `AIRFLOW_ADMIN_PASSWORD` | Airflow UI login |
 | `ETL_STRICT` | `true` = fail on missing/empty sources; default warns and skips |
@@ -69,30 +66,28 @@ Configure via `.env` (copy from `.env.example`):
 
 ### Transform (Spark)
 
-- Pipeline CLI: `python -m src.pipelines.run {bronze|silver|gold|enrich} {platform}`.
+- Pipeline CLI: `python -m src.pipelines.run {bronze|silver|gold} {platform}` (or `medallion`).
 - Preserve Airbyte lineage: `_airbyte_raw_id`, `_airbyte_extracted_at`, `_airbyte_meta`.
 - Dedupe in bronze by natural keys from each platform's `tables.py`.
 
-### Enrich (Serving)
+### Catalog API (FastAPI)
 
-- Runs **once daily** after `gold_{platform}` in the same DAG.
-- Reads gold Delta from MinIO + Bridge tables via JDBC (`platform_account`, `platform_object_map`, `client`).
-- Writes `serving.metrics_daily` in backend Postgres via JDBC.
-- Filter Bridge rows: `is_active = true` only.
-- `ENRICH_MODE=full`: replace all rows for platform (MVP default).
-- `ENRICH_MODE=incremental`: delete + insert yesterday's `date` only.
-- Re-running enrich without re-extracting picks up Bridge mapping changes from existing gold.
+- App under `src/api/`; async lifespan initializes `SparkSession` before accepting traffic.
+- Reads silver Delta from MinIO; returns hierarchy rows for Bridge discovery.
+- Spark/MinIO work is sync — run off the event loop.
+- Latency OK (config / new campaigns, not dashboard hot path).
 
 ### Orchestration (Airflow)
 
 - Invoke Spark via `BashOperator` calling the pipeline CLI.
-- DAG flow: `sync_raw → bronze_{platform} → silver_{platform} → gold_{platform} → enrich_{platform}`.
+- DAG flow: `sync_raw → bronze_{platform} → silver_{platform} → gold_{platform}`.
 - DAGs paused at creation; schedule `@daily`.
 
 ### Dependencies
 
 - Split requirements: `requirements/spark.txt`, `requirements/airflow.txt`.
 - Local Spark runs need Java 17: `pip install -r requirements/spark.txt`.
+- Catalog API needs FastAPI + uvicorn (add when implementing `src/api/`).
 
 ## Quick Reference
 
@@ -106,7 +101,9 @@ pip install -r requirements/spark.txt
 MINIO_ENDPOINT=http://localhost:9000 python -m src.pipelines.run bronze tiktok
 MINIO_ENDPOINT=http://localhost:9000 python -m src.pipelines.run silver tiktok
 MINIO_ENDPOINT=http://localhost:9000 python -m src.pipelines.run gold tiktok
-BINDER_DATABASE_URL=postgresql://... python -m src.pipelines.run enrich tiktok
+
+# Catalog API (after implemented)
+# uvicorn src.api.main:app --reload
 
 pytest
 ```

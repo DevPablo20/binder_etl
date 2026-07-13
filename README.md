@@ -1,6 +1,6 @@
 # binder_etl
 
-Medallion ETL for Binder: Airbyte extracts marketing platform data into MinIO, Spark transforms through bronze/silver/gold layers, and an enrich job writes dashboard-ready metrics to backend Postgres (`serving.metrics_daily`).
+Medallion ETL for Binder: Airbyte extracts marketing platform data into MinIO, Spark transforms through bronze/silver/gold layers, and a FastAPI catalog serves lake identities for backend Bridge discovery.
 
 ## Prerequisites
 
@@ -9,7 +9,6 @@ Medallion ETL for Binder: Airbyte extracts marketing platform data into MinIO, S
 | Docker + Compose | recent | MinIO, Airflow, local infra |
 | Python | 3.11 | Local Spark pipeline runs and tests |
 | Java | 17 | Required by PySpark |
-| Backend Postgres | 15 | Bridge metadata + serving tables (separate stack) |
 
 Airbyte runs **outside** docker-compose via `abctl` on the host. See [airbyte/README.md](airbyte/README.md).
 
@@ -21,7 +20,7 @@ Airbyte runs **outside** docker-compose via `abctl` on the host. See [airbyte/RE
 cp .env.example .env
 ```
 
-Edit `.env` with your MinIO credentials, Airflow admin password, Fernet key, and `BINDER_DATABASE_URL` pointing at the **backend** Postgres (not the Airflow metadata DB in compose).
+Edit `.env` with your MinIO credentials, Airflow admin password, and Fernet key.
 
 Generate an Airflow Fernet key:
 
@@ -111,13 +110,7 @@ python -m src.pipelines.run silver tiktok
 python -m src.pipelines.run gold tiktok
 ```
 
-The Airflow `tiktok_daily` DAG runs the same medallion chain (`sync_raw → bronze → silver → gold`) without enrich.
-
-Enrich is a separate step (not part of the medallion DAG). It joins gold with Bridge metadata and writes `serving.metrics_daily`. Requires backend Postgres running and `BINDER_DATABASE_URL` set:
-
-```bash
-python -m src.pipelines.run enrich tiktok
-```
+The Airflow `tiktok_daily` DAG runs the same medallion chain (`sync_raw → bronze → silver → gold`).
 
 Enable the `tiktok_daily` DAG in the Airflow UI to orchestrate the medallion chain on a schedule.
 
@@ -134,9 +127,6 @@ Key variables (full list in `.env.example`):
 | Variable | Purpose |
 |----------|---------|
 | `MINIO_ENDPOINT` | `http://localhost:9000` (host) or `http://minio:9000` (containers) |
-| `BINDER_DATABASE_URL` | JDBC URL to backend Postgres for enrich |
-| `SERVING_SCHEMA` | Default `serving` |
-| `ENRICH_MODE` | `full` (replace all platform rows) or `incremental` (yesterday only) |
 | `ETL_STRICT` | `true` = fail on missing sources; default warns and skips |
 
 ## Project layout
@@ -145,9 +135,10 @@ Key variables (full list in `.env.example`):
 binder_etl/
 ├── dags/                  # Airflow DAGs (e.g. tiktok_daily)
 ├── src/
-│   ├── pipelines/run.py   # CLI: run {bronze|silver|gold|enrich} {platform}
-│   ├── transformers/      # Per-platform medallion + enrich logic
-│   └── io/                # MinIO and Postgres I/O
+│   ├── api/               # FastAPI catalog (backend pulls identities)
+│   ├── pipelines/run.py   # CLI: run {bronze|silver|gold} {platform}
+│   ├── transformers/      # Per-platform medallion + catalog transforms
+│   └── io/                # MinIO read/write
 ├── dev/                   # Spark sandbox for transformer exploration (profile: dev)
 ├── airbyte/               # abctl install docs + secrets template
 ├── infra/                 # Airflow + spark-dev Dockerfiles + local volume mounts
@@ -161,9 +152,9 @@ Platform metadata (streams, dedupe keys, join contract) lives in `src/transforme
 | Instance | Where | Purpose |
 |----------|-------|---------|
 | ETL `postgres` | `docker-compose.yaml` | Airflow metadata only |
-| Backend Postgres | `binder_app_backend` compose | Bridge + `serving.metrics_daily` |
+| Backend Postgres | `binder_app_backend` compose | Bridge metadata (backend SSOT) |
 
-The enrich job connects to backend Postgres via `BINDER_DATABASE_URL`.
+Catalog is served by ETL FastAPI; backend pulls it over HTTP (no ETL JDBC write to backend for catalog).
 
 ## Useful commands
 

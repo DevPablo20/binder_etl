@@ -13,9 +13,6 @@ x-airflow-common: &airflow-common
     MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
     MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     MINIO_ENDPOINT: http://minio:9000
-    BINDER_DATABASE_URL: ${BINDER_DATABASE_URL:-}
-    SERVING_SCHEMA: ${SERVING_SCHEMA:-serving}
-    ENRICH_MODE: ${ENRICH_MODE:-full}
     ETL_STRICT: ${ETL_STRICT:-false}
   volumes:
     - ./dags:/opt/airflow/dags

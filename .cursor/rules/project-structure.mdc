@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Project Structure
 
-Simplified medallion ETL + serving layout. See [domain-architecture.mdc](mdc:.cursor/rules/domain-architecture.mdc) for data flow and [tech-stack.mdc](mdc:.cursor/rules/tech-stack.mdc) for versions.
+Simplified medallion ETL + FastAPI catalog. See [domain-architecture.mdc](mdc:.cursor/rules/domain-architecture.mdc) for data flow and [tech-stack.mdc](mdc:.cursor/rules/tech-stack.mdc) for versions.
 
 ## Root Layout
 
@@ -21,27 +21,30 @@ binder_etl/
 │   └── README.md            # abctl install + TikTok connection
 ├── dags/
 │   └── tiktok/
-│       └── tiktok_daily.py  # sync_raw → bronze → silver → gold → enrich
+│       └── tiktok_daily.py  # sync_raw → bronze → silver → gold
 ├── src/
-│   ├── config/settings.py   # MinIO + BINDER_DATABASE_URL
+│   ├── config/settings.py   # MinIO (+ shared settings)
 │   ├── spark_session.py     # Spark + Delta + S3A
+│   ├── api/                 # FastAPI catalog app
+│   │   ├── main.py          # app + async lifespan (Spark init before serve)
+│   │   └── routes/
+│   │       └── catalog.py   # GET catalog for backend
 │   ├── io/
 │   │   ├── reader.py        # Read Parquet/Delta from MinIO
-│   │   ├── writer.py        # Write Delta to MinIO
-│   │   └── postgres.py      # JDBC read Bridge + write serving
+│   │   └── writer.py        # Write Delta to MinIO
 │   ├── pipelines/
-│   │   └── run.py           # CLI: run {bronze|silver|gold|enrich} {platform}
+│   │   └── run.py           # CLI: run {bronze|silver|gold} {platform}
 │   └── transformers/
 │       ├── base.py          # Thin shared base (one file)
 │       └── tiktok/
-│           ├── tables.py    # SSOT: streams, dedupe, join key contract
+│           ├── tables.py    # SSOT: streams, dedupe, join key contract, catalog entities
 │           ├── bronze.py    # layer orchestrator (I/O + ETL_STRICT)
 │           ├── silver.py
 │           ├── gold.py
-│           ├── enrich.py    # gold + Bridge → serving.metrics_daily
-│           └── transforms/  # pure DataFrame logic (no SparkSession)
+│           └── transforms/  # pure DataFrame logic
 │               ├── silver/  # one module per stream + SILVER_TRANSFORMS registry
-│               └── gold/    # one module per fact + GOLD_TRANSFORMS registry
+│               ├── gold/    # one module per fact + GOLD_TRANSFORMS registry
+│               └── catalog/ # silver → catalog API row shape
 ├── dev/                     # Dev-only Spark sandbox (not production code)
 │   ├── examples/            # Checked-in inspection templates
 │   └── sandbox/             # Personal scratch scripts (gitignored)
@@ -53,9 +56,9 @@ binder_etl/
     └── test_pipeline.py
 ```
 
-**Deferred:** `src/api/` — serving tables satisfy dashboard reads for MVP.
+**Deferred:** facts / dashboard Postgres serving (facts ⋈ Bridge); Bridge discovery CRUD on backend.
 
-**Backend follow-up:** `serving.metrics_daily` DDL in [binder_app_backend migrations](../binder_app_backend/src/system/database/migrations/); ETL owns enrich job only.
+**Catalog API:** run with uvicorn against `src.api.main:app` (async lifespan initializes Spark before accept). Spark/MinIO work in handlers runs off the event loop.
 
 ## Naming Conventions
 
@@ -63,47 +66,48 @@ binder_etl/
 |------|---------|---------|
 | Platform folder | lowercase slug | `tiktok`, `meta`, `google_ads` |
 | Airflow DAG id | `{platform}_daily` | `tiktok_daily` |
-| Airflow tasks | `{layer}_{platform}` | `bronze_tiktok`, `enrich_tiktok` |
+| Airflow tasks | `{layer}_{platform}` | `bronze_tiktok`, `gold_tiktok` |
 | Raw path | `airbyte/{platform}/{stream}/` | `airbyte/tiktok/campaigns/` |
 | Delta path | `{layer}/{platform}/{table}/` | `silver/tiktok/campaigns/` |
-| Enrich module | `src/transformers/{platform}/enrich.py` | `tiktok/enrich.py` |
-| Serving table | `serving.metrics_daily` | backend Postgres |
-| Pipeline CLI | `run {layer} {platform}` | `run enrich tiktok` |
-| Metadata SSOT | `src/transformers/{platform}/tables.py` | streams, dedupe, join keys |
+| Pipeline CLI | `run {layer} {platform}` | `run gold tiktok` |
+| Catalog API | FastAPI under `src/api/` | GET catalog endpoint(s) |
+| Metadata SSOT | `src/transformers/{platform}/tables.py` | streams, dedupe, join keys, catalog |
 | Silver transforms | `src/transformers/{platform}/transforms/silver/{stream}.py` | column renames + casts |
 | Gold transforms | `src/transformers/{platform}/transforms/gold/{fact}.py` | joins + business grain |
+| Catalog transforms | `src/transformers/{platform}/transforms/catalog/{entity}.py` | hierarchy rows for API |
 
 ## Layer vs Transform Split
 
 | File kind | Location | Responsibility |
 |-----------|----------|----------------|
-| Orchestrator | `{platform}/bronze.py`, `silver.py`, `gold.py`, `enrich.py` | MinIO I/O, loop streams/facts, ETL_STRICT |
-| Metadata | `{platform}/tables.py` | paths, dedupe keys, gold fact config, Bridge join keys |
-| Transforms | `{platform}/transforms/{layer}/` | pure `DataFrame → DataFrame` (or gold: `SparkSession + config → DataFrame`) |
+| Orchestrator | `{platform}/bronze.py`, `silver.py`, `gold.py` | MinIO I/O, loop streams/facts, ETL_STRICT |
+| Metadata | `{platform}/tables.py` | paths, dedupe keys, gold fact config, catalog entities, Bridge join keys |
+| Transforms | `{platform}/transforms/{layer}/` | pure `DataFrame → DataFrame` (or gold/catalog: Spark + sources) |
+| API | `src/api/` | FastAPI; lifespan Spark init; catalog routes call transforms |
 
-Bronze has no transform modules — dedupe is generic via `base.dedupe()` + `tables.py` keys.
+Bronze has no transform modules — dedupe is generic via `base.dedupe()` + `tables.py` keys. Catalog is **not** a pipeline CLI layer — only API + transforms.
 
 ## Entry Points
 
 | File | Role |
 |------|------|
-| `src/pipelines/run.py` | CLI for bronze, silver, gold, enrich |
+| `src/pipelines/run.py` | CLI for bronze, silver, gold |
+| `src/api/main.py` | FastAPI app; async lifespan initializes Spark before serve |
+| `src/api/routes/catalog.py` | GET catalog for backend Bridge discovery |
 | `src/spark_session.py` | Spark session with Delta + MinIO S3A |
-| `src/io/postgres.py` | JDBC helpers for Bridge read + serving write |
 | `src/transformers/{platform}/tables.py` | Platform metadata single source of truth |
-| `src/transformers/{platform}/enrich.py` | Gold + Bridge → serving cache |
-| `dags/{platform}/{platform}_daily.py` | Airflow orchestration |
+| `dags/{platform}/{platform}_daily.py` | Airflow orchestration (ends at gold) |
 | `dev/` + Compose `spark-dev` (profile `dev`) | Dev-only sandbox for exploring lake data / prototyping transformers |
 
 ## Add a New Platform (Checklist)
 
-1. Create `src/transformers/{platform}/tables.py` with streams, raw paths, dedupe keys, join key contract
+1. Create `src/transformers/{platform}/tables.py` with streams, raw paths, dedupe keys, join key contract, catalog entities
 2. Implement `bronze.py`, `silver.py`, `gold.py` orchestrators extending shared `base.py`
-3. Add silver transforms under `transforms/silver/` (one file per stream) and gold under `transforms/gold/` (one file per fact)
+3. Add silver transforms under `transforms/silver/`, gold under `transforms/gold/`, catalog under `transforms/catalog/`
 4. Normalize silver to canonical columns: `ad_account_id`, `campaign_id`, `ad_group_id`, `ad_id` (all strings)
-5. Implement `enrich.py` — join gold with Bridge, write `serving.metrics_daily`
+5. Wire catalog transforms so FastAPI can return the hierarchy contract for this platform
 6. Add platform to `PLATFORMS` list in pipeline runner
-7. Create `dags/{platform}/{platform}_daily.py` with `enrich_{platform}` as final task
+7. Create `dags/{platform}/{platform}_daily.py` ending at `gold_{platform}`
 8. Document Airbyte connection in `airbyte/README.md`
 9. Add smoke test under `tests/`
 
@@ -114,9 +118,9 @@ Copy the TikTok folder pattern — do not refactor shared code unless duplicatio
 | Area | binder_data_hub | binder_etl |
 |------|-----------------|------------|
 | Base classes | `base_bronze.py`, `base_silver.py`, `base_gold.py` | Single `base.py` |
-| Pipeline CLI | `run_layer` + legacy aliases | One `run.py` with enrich |
-| Serving | Not implemented | `enrich.py` → backend Postgres |
-| Query API | Full FastAPI catalog | Deferred (serving tables for MVP) |
+| Pipeline CLI | `run_layer` + legacy aliases | One `run.py` (bronze/silver/gold) |
+| Postgres landing | Not implemented | Deferred (facts ⋈ Bridge later) |
+| Query API | Full FastAPI catalog | FastAPI catalog (MVP) |
 | Docker | Multiple Dockerfiles | Shared image where possible |
 
 `binder_data_hub` is inspiration only — do not copy its complexity.

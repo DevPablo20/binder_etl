@@ -42,6 +42,21 @@ class GoldFactConfig:
         return [f"{PLATFORM}/{source}" for source in self.silver_sources]
 
 
+@dataclass(frozen=True)
+class CatalogEntityConfig:
+    object_type: str
+    silver_table: str
+    silver_sources: tuple[str, ...] = ()
+
+    @property
+    def silver_table_path(self) -> str:
+        return f"{PLATFORM}/{self.silver_table}"
+
+    @property
+    def silver_source_paths(self) -> list[str]:
+        return [f"{PLATFORM}/{source}" for source in self.silver_sources]
+
+
 TIKTOK_STREAMS: tuple[TikTokStream, ...] = (
     TikTokStream(
         name="advertisers",
@@ -103,5 +118,27 @@ GOLD_FACTS: tuple[GoldFactConfig, ...] = (
             BridgeMapping("ad_group_id", "platform_object_map.external_id (ad_group)"),
             BridgeMapping("ad_id", "platform_object_map.external_id (ad)"),
         ),
+    ),
+)
+
+CATALOG_ENTITIES: tuple[CatalogEntityConfig, ...] = (
+    CatalogEntityConfig(
+        object_type="account",
+        silver_table="advertisers",
+    ),
+    CatalogEntityConfig(
+        object_type="campaign",
+        silver_table="campaigns",
+        silver_sources=("advertisers",),
+    ),
+    CatalogEntityConfig(
+        object_type="ad_group",
+        silver_table="ad_groups",
+        silver_sources=("campaigns", "advertisers"),
+    ),
+    CatalogEntityConfig(
+        object_type="ad",
+        silver_table="ads",
+        silver_sources=("advertisers",),
     ),
 )

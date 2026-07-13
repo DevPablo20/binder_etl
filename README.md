@@ -49,6 +49,7 @@ This starts:
 | MinIO API | http://localhost:9000 | Object storage (raw → gold buckets) |
 | MinIO Console | http://localhost:9001 | Web UI |
 | Airflow | http://localhost:8081 | Orchestration (DAGs paused by default) |
+| Catalog API | http://localhost:8002 | FastAPI lake identities for Bridge discovery |
 
 Check status:
 
@@ -114,7 +115,25 @@ The Airflow `tiktok_daily` DAG runs the same medallion chain (`sync_raw → bron
 
 Enable the `tiktok_daily` DAG in the Airflow UI to orchestrate the medallion chain on a schedule.
 
-### 6. Tests
+### 6. Catalog API
+
+The `catalog-api` service starts with `docker compose up` and stays available for backend Bridge discovery on port **8002** (avoids Airbyte `abctl` on 8000). After silver tables exist in MinIO:
+
+```bash
+curl http://localhost:8002/catalog/tiktok
+curl 'http://localhost:8002/catalog/tiktok?object_type=campaign'
+```
+
+Override the host port with `CATALOG_API_PORT` in `.env` if needed.
+
+For local API debugging with reload (optional; Compose service is the default):
+
+```bash
+export MINIO_ENDPOINT=http://localhost:9000
+uvicorn src.api.main:app --reload --port ${CATALOG_API_PORT:-8002}
+```
+
+### 7. Tests
 
 ```bash
 pytest
@@ -128,6 +147,7 @@ Key variables (full list in `.env.example`):
 |----------|---------|
 | `MINIO_ENDPOINT` | `http://localhost:9000` (host) or `http://minio:9000` (containers) |
 | `ETL_STRICT` | `true` = fail on missing sources; default warns and skips |
+| `CATALOG_API_PORT` | Host port for catalog FastAPI (default `8002`) |
 
 ## Project layout
 

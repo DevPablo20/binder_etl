@@ -19,7 +19,7 @@ Local medallion ETL: Airbyte extracts to MinIO, Spark transforms, Airflow orches
 | Orchestration | **Airflow 2.10.x** LocalExecutor | One DAG per platform, `@daily` schedule |
 | Catalog API | **FastAPI** + uvicorn | Read-only catalog from silver; async lifespan inits Spark |
 | Backend Postgres | **PostgreSQL 15** | Bridge metadata (separate stack; backend owns) |
-| Dev infra | **Docker Compose** | MinIO, Postgres (Airflow meta), Airflow |
+| Dev infra | **Docker Compose** | MinIO, Postgres (Airflow meta), Airflow, Catalog API |
 | Tests | **pytest** | Smoke tests for Spark I/O and pipeline CLI |
 
 ## Two Postgres Instances
@@ -41,8 +41,9 @@ ETL does **not** write to backend Postgres for catalog — backend pulls catalog
 | `airflow-init` | — | DB migrate + admin user |
 | `airflow-webserver` | 8081 | Airflow UI |
 | `airflow-scheduler` | — | DAG execution |
+| `catalog-api` | 8002 | FastAPI lake identities (Spark lifespan; reads silver) |
 
-**Not in compose:** Airbyte (`abctl` on host), backend Postgres (separate stack), FastAPI catalog (run on host / later service).
+**Not in compose:** Airbyte (`abctl` on host), backend Postgres (separate stack). Optional `spark-dev` is profile-gated (`--profile dev`).
 
 ## Environment Variables
 
@@ -55,6 +56,7 @@ Configure via `.env` (copy from `.env.example`):
 | `AIRFLOW_FERNET_KEY` | Encrypt Airflow connections |
 | `AIRFLOW_ADMIN_USER` / `AIRFLOW_ADMIN_PASSWORD` | Airflow UI login |
 | `ETL_STRICT` | `true` = fail on missing/empty sources; default warns and skips |
+| `CATALOG_API_PORT` | Host port for catalog FastAPI (default `8002`; avoid `8000` — Airbyte abctl) |
 
 ## Practices
 
@@ -72,10 +74,12 @@ Configure via `.env` (copy from `.env.example`):
 
 ### Catalog API (FastAPI)
 
+- Compose service `catalog-api` (default stack) serves on port `8002`.
 - App under `src/api/`; async lifespan initializes `SparkSession` before accepting traffic.
 - Reads silver Delta from MinIO; returns hierarchy rows for Bridge discovery.
 - Spark/MinIO work is sync — run off the event loop.
 - Latency OK (config / new campaigns, not dashboard hot path).
+- Optional host debug: `uvicorn src.api.main:app --reload --port ${CATALOG_API_PORT:-8002}`.
 
 ### Orchestration (Airflow)
 
@@ -87,7 +91,7 @@ Configure via `.env` (copy from `.env.example`):
 
 - Split requirements: `requirements/spark.txt`, `requirements/airflow.txt`.
 - Local Spark runs need Java 17: `pip install -r requirements/spark.txt`.
-- Catalog API needs FastAPI + uvicorn (add when implementing `src/api/`).
+- Catalog API image reuses `infra/spark-dev/Dockerfile` (Java 17 + spark.txt including FastAPI/uvicorn).
 
 ## Quick Reference
 
@@ -102,8 +106,8 @@ MINIO_ENDPOINT=http://localhost:9000 python -m src.pipelines.run bronze tiktok
 MINIO_ENDPOINT=http://localhost:9000 python -m src.pipelines.run silver tiktok
 MINIO_ENDPOINT=http://localhost:9000 python -m src.pipelines.run gold tiktok
 
-# Catalog API (after implemented)
-# uvicorn src.api.main:app --reload
+# Catalog API (Compose service on :8002; host reload optional for debug)
+# uvicorn src.api.main:app --reload --port ${CATALOG_API_PORT:-8002}
 
 pytest
 ```

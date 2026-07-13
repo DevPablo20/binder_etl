@@ -128,6 +128,38 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
+  catalog-api:
+    build:
+      context: .
+      dockerfile: infra/spark-dev/Dockerfile
+    container_name: binder-etl-catalog-api
+    working_dir: /opt/binder_etl
+    command: >
+      uvicorn src.api.main:app
+      --host 0.0.0.0
+      --port 8002
+    ports:
+      - "${CATALOG_API_PORT:-8002}:8002"
+    environment:
+      PYTHONPATH: /opt/binder_etl
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_ENDPOINT: http://minio:9000
+      ETL_STRICT: ${ETL_STRICT:-false}
+    volumes:
+      - ./src:/opt/binder_etl/src
+      - spark-ivy-cache:/root/.ivy2
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/openapi.json"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+
   spark-dev:
     profiles: ["dev"]
     build:

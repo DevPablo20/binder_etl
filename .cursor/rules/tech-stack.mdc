@@ -18,7 +18,7 @@ Local medallion ETL: Airbyte extracts to MinIO, Spark transforms, Airflow orches
 | Transform | **PySpark 3.5+** / **Delta Lake 3.x** | S3A config pointing at MinIO |
 | Orchestration | **Airflow 2.10.x** LocalExecutor | One DAG per platform, `@daily` schedule |
 | Catalog API | **FastAPI** + uvicorn | Read-only catalog from silver; async lifespan inits Spark |
-| Backend Postgres | **PostgreSQL 15** | Bridge metadata (separate stack; backend owns) |
+| Backend Postgres | **PostgreSQL 15** | Bridge metadata + analytics serving tables (separate stack; backend owns) |
 | Dev infra | **Docker Compose** | MinIO, Postgres (Airflow meta), Airflow, Catalog API |
 | Tests | **pytest** | Smoke tests for Spark I/O and pipeline CLI |
 
@@ -57,6 +57,9 @@ Configure via `.env` (copy from `.env.example`):
 | `AIRFLOW_ADMIN_USER` / `AIRFLOW_ADMIN_PASSWORD` | Airflow UI login |
 | `ETL_STRICT` | `true` = fail on missing/empty sources; default warns and skips |
 | `CATALOG_API_PORT` | Host port for catalog FastAPI (default `8002`; avoid `8000` — Airbyte abctl) |
+| `BACKEND_DB_HOST` | Backend Postgres host for analytics land (`postgres_local` in compose / `localhost` on host) |
+| `BACKEND_DB_PORT` | Backend Postgres port (`5432` in compose / `55432` published) |
+| `BACKEND_DB_USER` / `BACKEND_DB_PASSWORD` / `BACKEND_DB_DATABASE` | Backend Postgres credentials |
 
 ## Practices
 
@@ -105,6 +108,7 @@ pip install -r requirements/spark.txt
 MINIO_ENDPOINT=http://localhost:9000 python -m src.pipelines.run bronze tiktok
 MINIO_ENDPOINT=http://localhost:9000 python -m src.pipelines.run silver tiktok
 MINIO_ENDPOINT=http://localhost:9000 python -m src.pipelines.run gold tiktok
+MINIO_ENDPOINT=http://localhost:9000 python -m src.pipelines.run land tiktok
 
 # Catalog API (Compose service on :8002; host reload optional for debug)
 # uvicorn src.api.main:app --reload --port ${CATALOG_API_PORT:-8002}

@@ -15,7 +15,7 @@ default_args = {
 with DAG(
     dag_id="tiktok_daily",
     default_args=default_args,
-    description="TikTok Ads medallion: raw (Airbyte) → bronze → silver → gold",
+    description="TikTok Ads: raw → bronze → silver → gold → land Postgres",
     schedule="@daily",
     start_date=datetime(2026, 1, 1),
     catchup=False,
@@ -41,4 +41,9 @@ with DAG(
         bash_command=PIPELINE_CMD.format(layer="gold"),
     )
 
-    sync_raw >> bronze_tiktok >> silver_tiktok >> gold_tiktok
+    land_tiktok = BashOperator(
+        task_id="land_tiktok",
+        bash_command=PIPELINE_CMD.format(layer="land"),
+    )
+
+    sync_raw >> bronze_tiktok >> silver_tiktok >> gold_tiktok >> land_tiktok

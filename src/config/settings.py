@@ -23,6 +23,20 @@ class Settings:
 
     etl_strict: bool = _get("ETL_STRICT", "false").lower() in ("true", "1", "yes")
 
+    # Backend Postgres (analytics landing — Bridge SSOT DB)
+    backend_db_host: str = _get("BACKEND_DB_HOST", "")
+    backend_db_port: str = _get("BACKEND_DB_PORT", "5432")
+    backend_db_user: str = _get("BACKEND_DB_USER", "postgres_local")
+    backend_db_password: str = _get("BACKEND_DB_PASSWORD", "postgres_local@123")
+    backend_db_database: str = _get("BACKEND_DB_DATABASE", "postgres_local")
+
+    @property
+    def backend_jdbc_url(self) -> str:
+        return (
+            f"jdbc:postgresql://{self.backend_db_host}:{self.backend_db_port}/"
+            f"{self.backend_db_database}"
+        )
+
     def bucket_for_layer(self, layer: str) -> str:
         layer = layer.lower()
         if layer == "raw":

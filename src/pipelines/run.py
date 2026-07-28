@@ -1,11 +1,12 @@
 import sys
 
+from src.serving import land_ads_daily_metrics
 from src.spark_session import get_spark_session
 from src.transformers import PLATFORMS, TRANSFORMERS
 
 MEDALLION_LAYERS = ("bronze", "silver", "gold")
 
-PIPELINE_LAYERS = ("medallion", *TRANSFORMERS)
+PIPELINE_LAYERS = ("medallion", "land", *TRANSFORMERS)
 
 
 def _run_layer(layer: str, platform: str) -> None:
@@ -14,6 +15,15 @@ def _run_layer(layer: str, platform: str) -> None:
     transformer.run()
     spark.stop()
     print(f"{layer.capitalize()} completed for {platform}.")
+
+
+def _run_land(platform: str) -> None:
+    spark = get_spark_session(app_name=f"land-{platform}")
+    try:
+        count = land_ads_daily_metrics(spark, platform)
+        print(f"Land completed for {platform}: {count} rows.")
+    finally:
+        spark.stop()
 
 
 def main() -> None:
@@ -34,6 +44,10 @@ def main() -> None:
         for lake_layer in MEDALLION_LAYERS:
             _run_layer(lake_layer, platform)
         print(f"Medallion completed for {platform}.")
+        return
+
+    if layer == "land":
+        _run_land(platform)
         return
 
     _run_layer(layer, platform)

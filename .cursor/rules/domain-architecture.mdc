@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Domain Architecture
 
-Internal ETL that extracts marketing platform data, transforms through medallion layers into MinIO, and exposes a FastAPI catalog for the backend to pull lake identities into Bridge discovery. The backend ([binder_app_backend domain-architecture](../binder_app_backend/.cursor/rules/domain-architecture.mdc)) owns Bridge metadata; the lake stores facts; dashboards join facts with Bridge later (deferred).
+Internal ETL that extracts marketing platform data, transforms through medallion layers into MinIO, exposes a FastAPI catalog for Bridge discovery, and lands gold facts into backend Postgres (`analytics.ads_daily_metrics`) for NestJS dashboard queries (facts ⋈ Bridge at read time).
 
 ## Three-Zone Model
 
@@ -122,8 +122,12 @@ TikTok "ad group" maps to Bridge object type **`ad_group`**. Metadata SSOT: `src
 
 ## Deferred
 
-- Bridge discovery CRUD / NestJS APIs (backend)
-- Facts / dashboard Postgres serving (facts ⋈ Bridge)
 - Automated Airbyte trigger in Airflow (manual `abctl` sync for MVP)
+
+## Serving / land
+
+- After gold: `python -m src.pipelines.run land {platform}` writes `gold/{platform}/ads_daily_metrics` into backend Postgres `analytics.ads_daily_metrics` (platform IDs only; Bridge join is NestJS).
+- Requires `BACKEND_DB_*` env vars (see `.env.example`). JDBC via Spark + PostgreSQL driver.
+- DAG: `gold_{platform} >> land_{platform}`.
 
 See also: [tech-stack.mdc](mdc:.cursor/rules/tech-stack.mdc), [project-structure.mdc](mdc:.cursor/rules/project-structure.mdc).

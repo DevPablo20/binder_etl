@@ -5,7 +5,8 @@ from src.config import settings
 SPARK_JARS_PACKAGES = (
     "io.delta:delta-spark_2.12:3.2.1,"
     "org.apache.hadoop:hadoop-aws:3.3.4,"
-    "com.amazonaws:aws-java-sdk-bundle:1.12.262"
+    "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
+    "org.postgresql:postgresql:42.7.3"
 )
 
 

@@ -56,7 +56,7 @@ binder_etl/
     └── test_pipeline.py
 ```
 
-**Deferred:** facts / dashboard Postgres serving (facts ⋈ Bridge); Bridge discovery CRUD on backend.
+**Landing:** `src/serving/land_ads_daily_metrics.py` — gold → `analytics.ads_daily_metrics` in backend Postgres. CLI layer `land`. Bridge join remains on NestJS.
 
 **Catalog API:** run with uvicorn against `src.api.main:app` (async lifespan initializes Spark before accept). Spark/MinIO work in handlers runs off the event loop.
 
@@ -69,8 +69,9 @@ binder_etl/
 | Airflow tasks | `{layer}_{platform}` | `bronze_tiktok`, `gold_tiktok` |
 | Raw path | `airbyte/{platform}/{stream}/` | `airbyte/tiktok/campaigns/` |
 | Delta path | `{layer}/{platform}/{table}/` | `silver/tiktok/campaigns/` |
-| Pipeline CLI | `run {layer} {platform}` | `run gold tiktok` |
+| Pipeline CLI | `run {layer} {platform}` | `run gold tiktok`, `run land tiktok` |
 | Catalog API | FastAPI under `src/api/` | GET catalog endpoint(s) |
+| Serving land | `src/serving/` | gold → backend Postgres analytics schema |
 | Metadata SSOT | `src/transformers/{platform}/tables.py` | streams, dedupe, join keys, catalog |
 | Silver transforms | `src/transformers/{platform}/transforms/silver/{stream}.py` | column renames + casts |
 | Gold transforms | `src/transformers/{platform}/transforms/gold/{fact}.py` | joins + business grain |
@@ -91,12 +92,13 @@ Bronze has no transform modules — dedupe is generic via `base.dedupe()` + `tab
 
 | File | Role |
 |------|------|
-| `src/pipelines/run.py` | CLI for bronze, silver, gold |
+| `src/pipelines/run.py` | CLI for bronze, silver, gold, land |
+| `src/serving/land_ads_daily_metrics.py` | Land gold facts into backend Postgres |
 | `src/api/main.py` | FastAPI app; async lifespan initializes Spark before serve |
 | `src/api/routes/catalog.py` | GET catalog for backend Bridge discovery |
-| `src/spark_session.py` | Spark session with Delta + MinIO S3A |
+| `src/spark_session.py` | Spark session with Delta + MinIO S3A (+ Postgres JDBC jar) |
 | `src/transformers/{platform}/tables.py` | Platform metadata single source of truth |
-| `dags/{platform}/{platform}_daily.py` | Airflow orchestration (ends at gold) |
+| `dags/{platform}/{platform}_daily.py` | Airflow orchestration (ends at land) |
 | `dev/` + Compose `spark-dev` (profile `dev`) | Dev-only sandbox for exploring lake data / prototyping transformers |
 
 ## Add a New Platform (Checklist)
@@ -119,7 +121,7 @@ Copy the TikTok folder pattern — do not refactor shared code unless duplicatio
 |------|-----------------|------------|
 | Base classes | `base_bronze.py`, `base_silver.py`, `base_gold.py` | Single `base.py` |
 | Pipeline CLI | `run_layer` + legacy aliases | One `run.py` (bronze/silver/gold) |
-| Postgres landing | Not implemented | Deferred (facts ⋈ Bridge later) |
+| Postgres landing | `land` → `analytics.ads_daily_metrics` | Implemented (Approach B; Bridge join in NestJS) |
 | Query API | Full FastAPI catalog | FastAPI catalog (MVP) |
 | Docker | Multiple Dockerfiles | Shared image where possible |
 

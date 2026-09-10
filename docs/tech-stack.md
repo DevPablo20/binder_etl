@@ -1,11 +1,6 @@
----
-description: ETL tech stack versions, Docker Compose services, env vars, catalog API practices, and development workflow
-alwaysApply: true
----
-
 # Tech Stack
 
-Local medallion ETL: Airbyte extracts to MinIO, Spark transforms, Airflow orchestrates, FastAPI serves catalog for backend Bridge discovery. See [project-structure.mdc](mdc:.cursor/rules/project-structure.mdc) for layout.
+Local medallion ETL: Airbyte extracts to MinIO, Spark transforms, Airflow orchestrates, FastAPI serves catalog for backend Bridge discovery. See [project-structure.mdc](project-structure.md) for layout.
 
 ## Components
 
@@ -112,4 +107,4 @@ MINIO_ENDPOINT=http://localhost:9000 python -m src.pipelines.run gold tiktok
 pytest
 ```
 
-See also: [domain-architecture.mdc](mdc:.cursor/rules/domain-architecture.mdc).
+See also: [domain-architecture.mdc](architecture.md).

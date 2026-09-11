@@ -246,8 +246,9 @@ tipo 1 não guarda: não se sabe *quando* um ad_group mudou de território, mas 
 publicação #7 gerou aqueles números e a #8 gerou estes.
 
 Transporte por HTTP e não por JDBC ou S3: é simétrico ao `catalog-api` que já existe na
-direção oposta, não exige credencial S3 no backend nem driver JDBC no Spark. São ~450 linhas
-de JSON hoje — `spark.createDataFrame()` resolve. Se crescer, troca-se por parquet no MinIO
+direção oposta, não exige credencial S3 no backend nem driver JDBC no Spark. São no máximo
+~1.100 linhas de JSON hoje (70 campanhas, 350 ad groups, 675 ads) —
+`spark.createDataFrame()` resolve. Se crescer, troca-se por parquet no MinIO
 sem mudar o modelo.
 
 ## Plano de migração

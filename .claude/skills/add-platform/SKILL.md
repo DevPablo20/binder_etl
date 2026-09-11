@@ -29,8 +29,16 @@ de nome.
 ## 1. Airbyte
 
 Documente a conexão em `airbyte/README.md`. Prefira **Incremental + Append** se o conector
-oferecer — reduz chamada de API e churn no raw. Se não oferecer, tudo bem: o bronze acumula
-por conta própria.
+oferecer — reduz chamada de API e churn no raw. Evite Overwrite: hoje é o raw que acumula o
+histórico, um arquivo por sync. Se o conector só oferecer Overwrite, o bronze passa a
+**precisar** acumular (ver passo 3).
+
+- **Inclua deletados**, se o conector tiver a opção. Sem ela, objetos deletados nunca chegam
+  às dimensões, mas as métricas deles chegam ao relatório.
+- **Escolha um `start_date` que cubra o histórico desejado.** Streams incrementais só trazem
+  objetos modificados desde essa data.
+- **Mudar qualquer um dos dois depois exige Clear data dos streams.** O cursor do
+  incremental vive no Airbyte; limpar o raw não o reseta.
 
 ## 2. `tables.py` — o SSOT da plataforma
 
@@ -52,11 +60,12 @@ demais faz um objeto que mudou de pai virar duas linhas — e a métrica duplica
 ## 3. Orquestradores de camada
 
 Estendem `BaseTransformer`. Cuidam de I/O no MinIO, loop de streams, `ETL_STRICT` e — no
-bronze — da acumulação.
+bronze — do dedupe.
 
-O bronze **precisa** acumular. O padrão está em [docs/architecture.md](../../../docs/architecture.md):
-union com o Delta existente, `dedupe()`, `.cache()` + `.count()`, e só então
-`write_delta(mode="overwrite")`.
+Com Append no raw, ler o raw inteiro e fazer dedupe já preserva o histórico. Se o raw for
+Overwrite, ou tiver retenção, o bronze **precisa** acumular: union com o Delta existente,
+`dedupe()`, `.cache()` + `.count()`, e só então `write_delta(mode="overwrite")`. Padrão em
+[docs/architecture.md](../../../docs/architecture.md).
 
 ## 4. Transforms
 
@@ -74,12 +83,17 @@ Toda plataforma normaliza para os mesmos nomes, **todos string**:
 | `ad_group_id` | `platform_ad_group_classification.external_ad_group_id` |
 | `ad_id` | `platform_ad_classification.external_ad_id` |
 
-Preserve `_airbyte_raw_id`, `_airbyte_extracted_at` e `_airbyte_meta` — o
-`_airbyte_extracted_at` vale como *last seen* do objeto.
+Preserve `_airbyte_raw_id`, `_airbyte_extracted_at` e `_airbyte_meta`. No incremental,
+`_airbyte_extracted_at` é a última *modificação vista*, não prova de existência — se o
+objeto ainda existe na plataforma, quem diz é o status de deletado.
+
+Se o fato da plataforma não trouxer o id da conta (o TikTok emite `advertiser_id` nulo no
+relatório), derive `ad_account_id` pela hierarquia, a partir da dimensão de ads.
 
 Se a plataforma expõe formato nativo do criativo (equivalente ao `ad_format` do TikTok),
 mantenha a coluna no silver: ela alimenta a tradução `(platform, native_value) → format`
-do backend, evitando classificação manual por ad.
+do backend, evitando classificação manual por ad. Valor nativo nulo é legítimo (no TikTok,
+posts autorizados) — não descarte a linha.
 
 ## 6. Registrar em `PLATFORMS`
 
@@ -93,6 +107,7 @@ A Catalog API passa a servir a plataforma automaticamente.
 ## 8. Smoke test
 
 Um teste em `tests/` que rode o medallion sobre uma amostra e verifique as colunas canônicas.
+E um teste de conservação no molde de `tests/test_conservation_tiktok.py`.
 
 ## 9. Backend
 
@@ -109,4 +124,6 @@ pytest tests/
 Confirme: as quatro tabelas de dimensão existem no silver com as colunas canônicas como
 string; o fato gold está no grão ad × dia; a Catalog API responde para os quatro
 `object_type`; e — a invariante que mais importa — **a soma das métricas no gold é igual à
-soma no relatório diário do silver**. Se não for, um `inner join` está descartando linhas.
+soma no relatório diário do silver**. Se for menor, um `inner join` está descartando linhas
+— e vale checar se a extração trouxe todas as dimensões. Se for maior, é fan-out por chave
+de dedupe composta demais.

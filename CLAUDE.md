@@ -11,28 +11,37 @@ materializa o **gold enriquecido**.
 ## Estado desta branch
 
 `arch/bridge-enrichment` reorganiza a documentação para a arquitetura decidida. **O código
-ainda é o antigo.** Três coisas mudam aqui, nesta ordem:
+ainda é o antigo.** O que muda aqui, nesta ordem:
 
 | # | Mudança | Situação |
 |---|---|---|
-| 1 | `dedupe_columns` reduzido à chave natural mínima | pendente — **pré-requisito do 2** |
-| 2 | Bronze acumula: union com o existente antes do dedupe | pendente |
-| 3 | Reprocessar e verificar a recuperação de linhas no gold | pendente |
+| 0 | Extração completa no Airbyte (deletados incluídos, `start_date` 2025-01-01) | **feito** |
+| 1 | Gold parte do fato: `LEFT JOIN` nas dimensões, chaves vindas do fato | pendente — é o que `tests/test_conservation_tiktok.py` cobra |
+| 2 | `dedupe_columns` reduzido à chave natural mínima, inclusive no fato | pendente |
+| 3 | Bronze acumula: union com o existente antes do dedupe | pendente — baixa prioridade, defesa contra retenção do raw |
 | 8 | Gold enriquecido: fetch da publicação, três `LEFT JOIN`, coluna `MAP` | pendente |
 
 Detalhe e armadilhas: [docs/architecture.md](docs/architecture.md).
 
-## Problema conhecido: o gold perde ~52% das linhas
+## Diagnóstico da perda de linhas no gold
 
-`ads_reports_daily` tem 8.676 linhas; `ads_daily_metrics` tem 4.154.
+Medido em 11/09/2026. O `inner join` do gold descarta linhas do fato cuja campanha não está
+na dimensão `campaigns`.
 
-A causa é uma assimetria no Airbyte: as **dimensões** (`advertisers`, `campaigns`,
-`ad_groups`, `ads`) vêm em Full Refresh + Overwrite — um único objeto no raw, do último sync
-— enquanto **`ads_reports_daily`** vem em Incremental + Append e acumula. Todo objeto que
-existia antes e não existe hoje tem métrica sem linha de dimensão, e o `inner join` do gold
-descarta.
+- **A causa principal era a extração incompleta, não o modo de sync.** As streams já eram
+  Incremental + Append, e `advertisers` Full Refresh + Append; o raw acumula. O conector,
+  porém, só trazia objetos modificados desde o `start_date` (2026-01-01) e omitia
+  deletados. Com isso, 54 de 68 campanhas do fato não tinham dimensão, e o gold perdia
+  R$ 30.065,43 de spend.
+- **Correção aplicada no Airbyte:** ligar *Include Deleted Data*, `start_date` 2025-01-01 e
+  **Clear data** dos streams. Limpar o raw **não** reseta o cursor do incremental.
+- **Hoje:** spend, impressões e cliques batem entre silver e gold (R$ 9.073.343,49). Ainda
+  se perdem 958 de 22.739 linhas, de 85 campanhas modificadas antes de 2025, e **todas** as
+  59 métricas dessas linhas são zero. O passo 1 fecha isso.
 
-**Isso bloqueia o resto.** Não adianta enriquecer corretamente uma base incompleta.
+**Linha não é dinheiro.** 66% do fato (14.967 linhas) são ad × dia com todas as métricas
+zeradas: o conector emite uma linha por ad por dia mesmo sem entrega. Meça a invariante por
+soma de métrica, não por contagem.
 
 ## Arquitetura de enriquecimento (invariantes compartilhadas)
 
@@ -66,13 +75,14 @@ Valem nos três repositórios. Contradizer uma delas é bug, não escolha de imp
 
 | Camada | Caminho | Formato | Responsabilidade |
 |---|---|---|---|
-| Raw | `raw/airbyte/{platform}/{stream}/` | Parquet | Landing do Airbyte — nunca editar à mão. **Pode ser sobrescrito** |
-| Bronze | `bronze/{platform}/{table}/` | Delta | **Camada acumuladora.** Union + dedupe pela chave natural |
+| Raw | `raw/airbyte/{platform}/{stream}/` | Parquet | Landing do Airbyte — nunca editar à mão. Acumula um arquivo por sync |
+| Bronze | `bronze/{platform}/{table}/` | Delta | Dedupe pela chave natural sobre todo o raw; alvo: acumular também |
 | Silver | `silver/{platform}/{table}/` | Delta | Renomes e tipos corretos |
 | Gold | `gold/{platform}/{fact}/` | Delta | Fatos no grão de negócio |
 
-`_airbyte_extracted_at` sobrevive até o silver e vale como **last seen** — é o filtro de
-"ainda existe na plataforma" para a tela de configuração, sem coluna nova.
+**Existência de objeto vem do status, não de `_airbyte_extracted_at`.** No incremental, um
+objeto só é reextraído quando muda, então um `extracted_at` antigo não significa que ele
+sumiu. Deletados chegam explicitamente com `*_STATUS_DELETE` em `secondary_status`.
 
 ## Regras duras
 
@@ -83,7 +93,13 @@ Valem nos três repositórios. Contradizer uma delas é bug, não escolha de imp
   `_airbyte_meta`.
 - **Não guardar entidades de negócio do Binder no MinIO** — isso vive no Postgres.
 - **Chave de dedupe é a chave natural mínima** (`ad_id`, não `advertiser_id + campaign_id +
-  adgroup_id + ad_id`). Com bronze acumulando, chave composta demais duplica métrica.
+  adgroup_id + ad_id`). O raw acumula versões; chave composta demais faz um objeto que mudou
+  de pai virar duas linhas e duplica métrica.
+- **O fato não traz id de conta.** `advertiser_id` existe no schema do `ads_reports_daily`
+  mas vem `NULL` do conector. `ad_account_id` deriva da hierarquia, pela dimensão `ads`.
+- **Todo join do gold é `LEFT`, partindo do fato.** A extração nunca é garantidamente
+  completa; o join não pode depender dela.
+- **Mudar `start_date` ou *Include Deleted* no Airbyte exige Clear data dos streams.**
 - A FastAPI de catálogo precisa inicializar o `SparkSession` no lifespan **antes** de aceitar
   tráfego. Trabalho Spark/MinIO é síncrono — rode fora do event loop.
 
@@ -96,13 +112,14 @@ docker compose up                               # MinIO + Postgres (meta Airflow
 docker compose --profile dev up spark-dev       # sandbox Spark
 uvicorn src.api.main:app                        # FastAPI de catálogo
 pytest tests/                                   # smoke tests
+pytest tests/test_conservation_tiktok.py        # invariante de conservação (rode o medallion antes)
 ```
 
 ## Documentação
 
 | Arquivo | Quando ler |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | acumulação no bronze, gold enriquecido, contrato de publicação, plano de migração |
+| [docs/architecture.md](docs/architecture.md) | extração, conservação, gold enriquecido, contrato de publicação, plano de migração |
 | [docs/project-structure.md](docs/project-structure.md) | árvore de diretórios, convenções de nome, split layer/transform |
 | [docs/tech-stack.md](docs/tech-stack.md) | versões e práticas por biblioteca |
 

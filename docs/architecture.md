@@ -136,20 +136,25 @@ sob nosso controle — vale para a Kwai e para toda plataforma futura. `BaseTran
 já ordena por `_airbyte_extracted_at desc`, então a versão mais recente vence, que é
 exatamente o SCD tipo 1.
 
-### Armadilha: chave de dedupe composta demais
+### Armadilha: chave de dedupe composta demais — corrigido
 
-O raw **já** acumula versões de cada objeto. Se um ad mudar de ad_group, as duas versões têm
-chaves compostas diferentes, o dedupe não colapsa, e a métrica **duplica** no join do gold.
-Hoje é inofensivo porque nenhum objeto mudou de pai (dimensões e fato sem duplicata), mas
-não é garantia.
+O raw **já** acumula versões de cada objeto. Com chave composta, se um ad mudasse de
+ad_group, as duas versões teriam chaves diferentes, o dedupe não colapsaria, e a métrica
+duplicaria no join do gold. Corrigido em 14/09/2026: todo stream dedupe pela chave natural
+mínima.
 
-| Stream | Hoje | Deve ser |
-|---|---|---|
-| `advertisers` | `advertiser_id` | `advertiser_id` ✓ |
-| `campaigns` | `advertiser_id, campaign_id` | `campaign_id` |
-| `ad_groups` | `advertiser_id, campaign_id, adgroup_id` | `adgroup_id` |
-| `ads` | `advertiser_id, campaign_id, adgroup_id, ad_id` | `ad_id` |
-| `ads_reports_daily` | `ad_id, stat_time_day, metrics.campaign_id, metrics.adgroup_id` | `ad_id, stat_time_day` |
+| Stream | Chave de dedupe |
+|---|---|
+| `advertisers` | `advertiser_id` |
+| `campaigns` | `campaign_id` |
+| `ad_groups` | `adgroup_id` |
+| `ads` | `ad_id` |
+| `ads_reports_daily` | `ad_id, stat_time_day` |
+
+Verificado depois da mudança: nenhuma dimensão ganhou linha duplicada (contagem = ids
+distintos em todas as quatro) e spend/impressões/cliques seguem idênticos entre silver e
+gold — como esperado, já que nenhum objeto trocou de pai no período extraído. A mudança é
+defesa para quando isso acontecer, não correção de um bug observado hoje.
 
 ### Outras ressalvas
 
@@ -259,7 +264,7 @@ A numeração é compartilhada com o backend e o frontend.
 |---|---|---|
 | 0 | Extração completa no Airbyte e diagnóstico medido — **feito** | **etl** |
 | 1 | Gold parte do fato: `LEFT JOIN`, chaves do fato, conta derivada de `ads` | **etl** |
-| 2 | Reduzir `dedupe_columns` à chave natural mínima, inclusive no fato | **etl** |
+| 2 | Reduzir `dedupe_columns` à chave natural mínima, inclusive no fato — **feito** | **etl** |
 | 3 | Acumular no bronze (defesa contra retenção do raw) | **etl** |
 | 4 | Criar as tabelas novas do Bridge | backend |
 | 5 | Migrar dados de `platform_object_map` | backend |

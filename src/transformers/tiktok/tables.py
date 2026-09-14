@@ -69,7 +69,7 @@ TIKTOK_STREAMS: tuple[TikTokStream, ...] = (
     TikTokStream(
         name="campaigns",
         raw_path=f"{RAW_PREFIX}/campaigns",
-        dedupe_columns=("advertiser_id", "campaign_id"),
+        dedupe_columns=("campaign_id",),
         bridge_mappings=(
             BridgeMapping("campaign_id", "platform_object_map.external_id (campaign)"),
         ),
@@ -77,7 +77,7 @@ TIKTOK_STREAMS: tuple[TikTokStream, ...] = (
     TikTokStream(
         name="ad_groups",
         raw_path=f"{RAW_PREFIX}/ad_groups",
-        dedupe_columns=("advertiser_id", "campaign_id", "adgroup_id"),
+        dedupe_columns=("adgroup_id",),
         bridge_mappings=(
             BridgeMapping("ad_group_id", "platform_object_map.external_id (ad_group)"),
         ),
@@ -85,7 +85,7 @@ TIKTOK_STREAMS: tuple[TikTokStream, ...] = (
     TikTokStream(
         name="ads",
         raw_path=f"{RAW_PREFIX}/ads",
-        dedupe_columns=("advertiser_id", "campaign_id", "adgroup_id", "ad_id"),
+        dedupe_columns=("ad_id",),
         bridge_mappings=(
             BridgeMapping("ad_id", "platform_object_map.external_id (ad)"),
         ),
@@ -93,12 +93,7 @@ TIKTOK_STREAMS: tuple[TikTokStream, ...] = (
     TikTokStream(
         name="ads_reports_daily",
         raw_path=f"{RAW_PREFIX}/ads_reports_daily",
-        dedupe_columns=(
-            "ad_id",
-            "stat_time_day",
-            "metrics.campaign_id",
-            "metrics.adgroup_id",
-        ),
+        dedupe_columns=("ad_id", "stat_time_day"),
     ),
 )
 

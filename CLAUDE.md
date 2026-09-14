@@ -17,7 +17,7 @@ ainda é o antigo.** O que muda aqui, nesta ordem:
 |---|---|---|
 | 0 | Extração completa no Airbyte (deletados incluídos, `start_date` 2025-01-01) | **feito** |
 | 1 | Gold parte do fato: `LEFT JOIN` nas dimensões, chaves vindas do fato | pendente — é o que `tests/test_conservation_tiktok.py` cobra |
-| 2 | `dedupe_columns` reduzido à chave natural mínima, inclusive no fato | pendente |
+| 2 | `dedupe_columns` reduzido à chave natural mínima, inclusive no fato | **feito** |
 | 3 | Bronze acumula: union com o existente antes do dedupe | pendente — baixa prioridade, defesa contra retenção do raw |
 | 8 | Gold enriquecido: fetch da publicação, três `LEFT JOIN`, coluna `MAP` | pendente |
 

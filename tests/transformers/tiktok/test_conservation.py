@@ -9,16 +9,8 @@ import pytest
 from pyspark.sql.functions import col, count, sum as sum_
 
 from src.io.reader import read_delta
-from src.spark_session import get_spark_session
 
 METRICS = ("spend", "impressions", "clicks")
-
-
-@pytest.fixture(scope="module")
-def spark():
-    session = get_spark_session(app_name="conservation-tiktok-test")
-    yield session
-    session.stop()
 
 
 def _totals(df, columns=METRICS):

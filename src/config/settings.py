@@ -23,6 +23,11 @@ class Settings:
 
     etl_strict: bool = _get("ETL_STRICT", "false").lower() in ("true", "1", "yes")
 
+    # A Catalog API é serviço sempre-ligado, lendo silver pequeno (centenas de linhas) —
+    # não precisa de local[*]. Default pequeno para não disputar núcleo com pipelines
+    # (CLI, DAG) rodando no mesmo host/máquina de dev.
+    catalog_spark_master: str = _get("CATALOG_SPARK_MASTER", "local[2]")
+
     def bucket_for_layer(self, layer: str) -> str:
         layer = layer.lower()
         if layer == "raw":

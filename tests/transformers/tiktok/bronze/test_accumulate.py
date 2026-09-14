@@ -5,9 +5,6 @@ terceiro: uma linha presente no bronze acumulado mas ausente do raw desta rodada
 cenário de retenção no raw, ou de conector só-Overwrite) tem que sobreviver depois de
 `_accumulate` + `dedupe`. Sem acumulação, ela simplesmente sumiria.
 """
-import pytest
-
-from src.spark_session import get_spark_session
 from src.transformers.tiktok.bronze import TikTokBronzeTransformer
 
 DEDUPE_COLUMNS = ["object_id"]
@@ -15,14 +12,6 @@ DEDUPE_COLUMNS = ["object_id"]
 
 def _row(object_id: str, value: str, extracted_at: str):
     return (object_id, value, extracted_at)
-
-
-@pytest.fixture(scope="module")
-def spark():
-    session = get_spark_session(app_name="bronze-accumulate-test", master="local[2]")
-    session.conf.set("spark.sql.shuffle.partitions", "4")
-    yield session
-    session.stop()
 
 
 def _df(spark, rows):

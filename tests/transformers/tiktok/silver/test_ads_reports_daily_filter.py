@@ -6,9 +6,6 @@ mas alguma conversão precisa sobreviver, e nenhuma soma pode mudar com o filtro
 """
 import json
 
-import pytest
-
-from src.spark_session import get_spark_session
 from src.transformers.tiktok.transforms.silver.ads_reports_daily import transform
 
 # O transform acessa cada campo por nome (col("metrics.X")) — todos precisam existir no
@@ -104,13 +101,6 @@ def _row(ad_id: str, stat_time_day: str, **metric_overrides) -> str:
             "_airbyte_meta": {"sync_id": "1"},
         }
     )
-
-
-@pytest.fixture(scope="module")
-def spark():
-    session = get_spark_session(app_name="silver-ads-reports-filter-test")
-    yield session
-    session.stop()
 
 
 def test_drops_row_with_every_metric_zero(spark):

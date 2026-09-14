@@ -1,10 +1,8 @@
 """Smoke test: Spark reads TikTok ads Parquet from MinIO raw bucket."""
 from src.config import settings
-from src.spark_session import get_spark_session
 
 
-def test_spark_reads_minio_raw_tiktok_ads():
-    spark = get_spark_session(app_name="minio-read-test")
+def test_spark_reads_minio_raw_tiktok_ads(spark):
     path = settings.s3a_uri("raw", "airbyte/tiktok/ads")
     try:
         df = spark.read.parquet(path)
@@ -14,5 +12,3 @@ def test_spark_reads_minio_raw_tiktok_ads():
             pass
         else:
             raise
-    finally:
-        spark.stop()

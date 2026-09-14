@@ -7,7 +7,6 @@ hoje): uma linha do fato cuja dimensão está faltando não pode ser descartada.
 """
 from decimal import Decimal
 
-import pytest
 from pyspark.sql.types import (
     DecimalType,
     IntegerType,
@@ -16,7 +15,6 @@ from pyspark.sql.types import (
     StructType,
 )
 
-from src.spark_session import get_spark_session
 from src.transformers.tiktok.tables import GOLD_FACTS
 from src.transformers.tiktok.transforms.gold.ads_daily_metrics import transform
 
@@ -117,17 +115,6 @@ def _fact_row(campaign_id, ad_group_id, ad_id, spend=Decimal("0.00"), impression
         0,  # video_play_actions
         0,  # reach
     )
-
-
-@pytest.fixture(scope="module")
-def spark():
-    # local[2] em vez do padrão local[*] (24 cores aqui): para um join de 1-2 linhas,
-    # disputar dezenas de workers Python de uma vez travava esta máquina
-    # (Python worker exited unexpectedly / EOFException) de forma intermitente.
-    session = get_spark_session(app_name="gold-ads-daily-metrics-test", master="local[2]")
-    session.conf.set("spark.sql.shuffle.partitions", "4")
-    yield session
-    session.stop()
 
 
 def _sources(spark, *, fact_rows, advertisers=(), campaigns=(), ad_groups=(), ads=()):

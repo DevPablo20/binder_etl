@@ -146,6 +146,7 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
       MINIO_ENDPOINT: http://minio:9000
       ETL_STRICT: ${ETL_STRICT:-false}
+      CATALOG_SPARK_MASTER: ${CATALOG_SPARK_MASTER:-local[2]}
     volumes:
       - ./src:/opt/binder_etl/src
       - spark-ivy-cache:/root/.ivy2

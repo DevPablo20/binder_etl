@@ -123,30 +123,37 @@ linha de fato órfã, sem nenhuma dimensão — e prova que ela sobrevive. Esse 
 real; o teste de conservação sozinho não basta, porque nos dados de hoje não sobra nenhum
 órfão para expor um `inner join` que voltasse por engano.
 
-## A acumulação no bronze
+## A acumulação no bronze — feito (14/09/2026)
 
-Hoje o bronze lê o raw inteiro, faz dedupe e sobrescreve. Como o raw acumula um arquivo por
-sync, isso já preserva o histórico. Acumular no bronze passa a ser **defesa**: vale quando
-o raw tiver retenção ou compactação, ou se algum stream voltar a Overwrite.
+Até aqui o bronze lia o raw inteiro, fazia dedupe e sobrescrevia. Como o raw acumula um
+arquivo por sync, isso já preservava o histórico *hoje*. A acumulação no bronze é **defesa**
+para quando isso deixar de valer: o raw ganhar retenção ou compactação, ou algum stream
+(desta plataforma ou de uma futura, como a Kwai) só oferecer Overwrite.
+
+Implementado em `bronze.py`, com a leitura do bronze existente e a decisão de unir separadas
+(`_read_existing_bronze` faz I/O, `_accumulate` é pura — mesma separação camada/transform da
+Etapa 3):
 
 ```python
 new = read_raw_parquet(spark, stream.raw_path)
-
-try:
-    existing = read_delta(spark, "bronze", stream.bronze_table_name)
-    combined = existing.unionByName(new, allowMissingColumns=True)
-except AnalysisException:            # primeira execução
-    combined = new
+existing = self._read_existing_bronze(stream)      # None na primeira execução
+combined = self._accumulate(existing, new)          # existing.unionByName(new, ...) ou só new
 
 cleaned = self.dedupe(combined, list(stream.dedupe_columns))
-cleaned.cache(); cleaned.count()     # materializa antes de sobrescrever a origem
+cleaned.cache()
+cleaned.count()                       # materializa antes de sobrescrever a origem
 write_delta(cleaned, "bronze", stream.bronze_table_name, mode="overwrite")
 ```
 
-Por que aqui e não no conector: os modos de sync disponíveis variam por conector e não estão
-sob nosso controle — vale para a Kwai e para toda plataforma futura. `BaseTransformer.dedupe`
-já ordena por `_airbyte_extracted_at desc`, então a versão mais recente vence, que é
-exatamente o SCD tipo 1.
+`BaseTransformer.dedupe` já ordena por `_airbyte_extracted_at desc`, então a versão mais
+recente vence, que é exatamente o SCD tipo 1 — inclusive entre rodadas, não só dentro do raw
+de uma rodada.
+
+`tests/test_bronze_accumulate.py` prova o cenário que importa sem MinIO: um objeto presente
+no bronze acumulado mas ausente do raw desta rodada (retenção simulada) sobrevive depois de
+`_accumulate` + `dedupe`. Verificado também com dados reais: bronze → silver → gold rodado
+duas vezes seguidas dá exatamente as mesmas contagens (idempotência), e a conservação
+silver × gold continua batendo.
 
 ### Armadilha: chave de dedupe composta demais — corrigido
 
@@ -277,7 +284,7 @@ A numeração é compartilhada com o backend e o frontend.
 | 0 | Extração completa no Airbyte e diagnóstico medido — **feito** | **etl** |
 | 1 | Gold parte do fato: `LEFT JOIN`, chaves do fato, conta derivada de `ads` — **feito** | **etl** |
 | 2 | Reduzir `dedupe_columns` à chave natural mínima, inclusive no fato — **feito** | **etl** |
-| 3 | Acumular no bronze (defesa contra retenção do raw) | **etl** |
+| 3 | Acumular no bronze (defesa contra retenção do raw) — **feito** | **etl** |
 | 4 | Criar as tabelas novas do Bridge | backend |
 | 5 | Migrar dados de `platform_object_map` | backend |
 | 6 | Tabela de tradução de formato + fila de pendências | backend |
@@ -308,13 +315,15 @@ Os passos 1–3 são independentes do backend e podem começar já. O passo 1 é
 
 ## A verificar
 
-| Verificação | Bloqueia |
-|---|---|
-| Delta em read-modify-write no mesmo caminho — confirmar `.cache()` em execução real | passo 3 |
+Nada pendente hoje.
 
 Resolvidas em 11/09/2026: "14 campanhas para 17 advertisers" era extração incompleta (hoje
 são 70 campanhas; as 9 contas sem campanha não tiveram gasto no período). Valores distintos
 de `ad_format`: 3, não ~6.
+
+Resolvida em 14/09/2026: read-modify-write no mesmo caminho Delta, com `.cache()` antes do
+`write_delta`. Rodado duas vezes seguidas em produção (bronze → silver → gold) sem
+divergência entre as rodadas.
 
 ## Deferido
 

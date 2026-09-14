@@ -1,9 +1,10 @@
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import col
+from pyspark.sql.functions import abs as abs_, coalesce, col, greatest, lit
+from pyspark.sql.types import NumericType
 
 
 def transform(df: DataFrame) -> DataFrame:
-    return df.select(
+    selected = df.select(
         col("metrics.campaign_id").cast("string").alias("campaign_id"),
         col("metrics.adgroup_id").cast("string").alias("ad_group_id"),
         col("ad_id").cast("string").alias("ad_id"),
@@ -116,3 +117,22 @@ def transform(df: DataFrame) -> DataFrame:
         col("_airbyte_extracted_at"),
         col("_airbyte_meta"),
     )
+
+    return _drop_rows_without_activity(selected)
+
+
+def _drop_rows_without_activity(df: DataFrame) -> DataFrame:
+    """Descarta ad × dia sem nenhuma métrica registrada.
+
+    O TikTok emite uma linha por ad por dia mesmo sem entrega — 66% do fato hoje. Uma
+    linha só é descartada se **todas** as métricas numéricas forem nulas ou zero; uma
+    linha com spend 0 mas alguma conversão sobrevive. Nenhuma soma muda, porque as
+    métricas descartadas já eram zero.
+    """
+    metric_columns = [
+        field.name for field in df.schema.fields if isinstance(field.dataType, NumericType)
+    ]
+    has_activity = (
+        greatest(*[coalesce(abs_(col(name)), lit(0)) for name in metric_columns]) > 0
+    )
+    return df.filter(has_activity)

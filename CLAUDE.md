@@ -111,8 +111,9 @@ python -m src.pipelines.run bronze tiktok       # camada isolada
 docker compose up                               # MinIO + Postgres (meta Airflow) + Airflow
 docker compose --profile dev up spark-dev       # sandbox Spark
 uvicorn src.api.main:app                        # FastAPI de catálogo
-pytest tests/                                   # smoke tests
-pytest tests/test_conservation_tiktok.py        # invariante de conservação (rode o medallion antes)
+pytest tests/                                   # suíte inteira, todas as plataformas
+pytest tests/transformers/tiktok/               # só TikTok — árvore espelha src/transformers/tiktok/
+pytest tests/transformers/tiktok/test_conservation.py  # invariante de conservação (rode o medallion antes)
 ```
 
 ## Documentação

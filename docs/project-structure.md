@@ -45,6 +45,22 @@ binder_etl/
 │   ├── airflow/Dockerfile
 │   └── spark-dev/Dockerfile
 └── tests/
+    ├── test_pipeline.py         # CLI/registry — não é de uma plataforma
+    ├── test_spark_minio.py      # plumbing Spark + MinIO/S3A
+    └── transformers/
+        └── tiktok/               # espelha src/transformers/tiktok/
+            ├── test_conservation.py  # invariante de conservação — cruza camadas
+            ├── bronze/
+            │   ├── test_smoke.py       # lê MinIO de verdade
+            │   └── test_accumulate.py  # unitário, sem I/O
+            ├── silver/
+            │   ├── test_smoke.py
+            │   └── test_*.py            # um por transform com lógica não-trivial
+            ├── gold/
+            │   ├── test_smoke.py
+            │   └── test_*.py            # um por fato com lógica não-trivial
+            └── catalog/
+                └── test_smoke.py
 ```
 
 ## Convenções de nome
@@ -61,6 +77,32 @@ binder_etl/
 | Transform silver | `transforms/silver/{stream}.py` | renomes e casts |
 | Transform gold | `transforms/gold/{fact}.py` | joins e grão de negócio |
 | Transform catálogo | `transforms/catalog/{entity}.py` | linhas de hierarquia para a API |
+| Teste | `tests/transformers/{platform}/{layer}/test_*.py` | espelha a árvore de `src/` — 1:1 por plataforma e camada |
+
+## Testes
+
+`tests/` espelha `src/transformers/{platform}/` para escalar com o número de plataformas —
+sem isso, o diretório vira uma lista plana de dezenas de arquivos `test_{layer}_{platform}.py`
+assim que a segunda ou terceira plataforma entrar.
+
+- **`test_smoke.py`** por camada (`bronze/`, `silver/`, `gold/`, `catalog/`): lê/escreve no
+  MinIO de verdade, roda o transformer real. É o mesmo teste de sempre, só que com o nome
+  simplificado porque a pasta já diz plataforma e camada — não precisa mais do sufixo
+  `_tiktok` no nome do arquivo.
+- **Um arquivo extra por transform com lógica não-trivial** (filtro, join, acumulação):
+  unitário, sem MinIO, com DataFrames sintéticos — ver `bronze/test_accumulate.py`,
+  `silver/test_ads_reports_daily_filter.py`, `gold/test_ads_daily_metrics.py` como exemplo.
+  Nem todo transform precisa de um; só os que têm uma regra que vale a pena provar isolada.
+- **`test_conservation.py`** fica na raiz da plataforma (`tiktok/`, não dentro de uma
+  camada), porque cruza bronze → silver → gold.
+- **Todo diretório tem `__init__.py`**, incluindo `tests/` e `tests/transformers/`. Sem isso,
+  dois arquivos com o mesmo nome em camadas diferentes (`bronze/test_smoke.py` e
+  `gold/test_smoke.py`) colidem no modo de import padrão do pytest.
+- **O que não é de uma plataforma fica na raiz de `tests/`** — `test_pipeline.py` (CLI e
+  registry) e `test_spark_minio.py` (plumbing Spark + MinIO).
+
+Ao adicionar uma plataforma, copie `tests/transformers/tiktok/` como copia
+`src/transformers/tiktok/` — mesma pasta, mesmos nomes de arquivo.
 
 ## Split camada vs transform
 

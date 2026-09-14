@@ -22,7 +22,7 @@ de nome.
 - [ ] 5. Normalizar as colunas canônicas do silver
 - [ ] 6. Registrar em PLATFORMS
 - [ ] 7. dags/{platform}/{platform}_daily.py
-- [ ] 8. Smoke test em tests/
+- [ ] 8. tests/transformers/{platform}/ — copie a árvore de tests/transformers/tiktok/
 - [ ] 9. Cadastrar catalog_key da plataforma no backend
 ```
 
@@ -104,10 +104,14 @@ A Catalog API passa a servir a plataforma automaticamente.
 `dags/{platform}/{platform}_daily.py`, tarefas `{layer}_{platform}`, terminando em
 `gold_{platform}`.
 
-## 8. Smoke test
+## 8. Testes
 
-Um teste em `tests/` que rode o medallion sobre uma amostra e verifique as colunas canônicas.
-E um teste de conservação no molde de `tests/test_conservation_tiktok.py`.
+Copie `tests/transformers/tiktok/` para `tests/transformers/{platform}/` — mesma árvore,
+`bronze/`, `silver/`, `gold/`, `catalog/`, cada uma com `__init__.py` e um `test_smoke.py`
+que rode o medallion sobre uma amostra e verifique as colunas canônicas. Um `test_*.py`
+extra só nos transforms com lógica não-trivial (filtro, join, acumulação) — sem MinIO, com
+DataFrames sintéticos, no molde de `gold/test_ads_daily_metrics.py`. E um teste de
+conservação na raiz da plataforma, no molde de `tiktok/test_conservation.py`.
 
 ## 9. Backend
 

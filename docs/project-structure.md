@@ -9,6 +9,7 @@ ETL medallion + FastAPI de catálogo. Fluxo de dados e decisões:
 binder_etl/
 ├── CLAUDE.md                # contexto sempre carregado
 ├── docs/                    # referência sob demanda
+│   └── plans/               # trabalho em andamento: iniciativas ativas + backlog
 ├── .claude/skills/          # workflows invocáveis
 ├── docker-compose.yaml      # MinIO + Postgres (meta Airflow) + Airflow (+ perfil spark-dev)
 ├── requirements/
@@ -110,7 +111,7 @@ Ao adicionar uma plataforma, copie `tests/transformers/tiktok/` como copia
 |---|---|---|
 | Orquestrador | `{platform}/bronze.py`, `silver.py`, `gold.py` | I/O no MinIO, loop de streams/fatos, `ETL_STRICT`, acumulação no bronze |
 | Metadados | `{platform}/tables.py` | caminhos, chaves de dedupe, config de fato gold, entidades de catálogo, join keys do Bridge |
-| Transforms | `{platform}/transforms/{layer}/` | `DataFrame → DataFrame` puro (gold e catálogo recebem Spark + fontes) |
+| Transforms | `{platform}/transforms/{layer}/` | lógica pura: silver é `DataFrame → DataFrame`; gold recebe `dict` de DataFrames já lidos; catálogo recebe Spark |
 | API | `src/api/` | FastAPI; Spark no lifespan; rotas chamam transforms |
 
 Bronze não tem módulos de transform — o dedupe é genérico via `base.dedupe()` + chaves do

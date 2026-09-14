@@ -148,6 +148,7 @@ Key variables (full list in `.env.example`):
 | `MINIO_ENDPOINT` | `http://localhost:9000` (host) or `http://minio:9000` (containers) |
 | `ETL_STRICT` | `true` = fail on missing sources; default warns and skips |
 | `CATALOG_API_PORT` | Host port for catalog FastAPI (default `8002`) |
+| `CATALOG_SPARK_MASTER` | Spark master of the always-on catalog API (default `local[2]` — avoid `local[*]`, it competes for cores with pipelines and tests) |
 
 ## Project layout
 

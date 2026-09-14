@@ -8,40 +8,11 @@ identidades do lake.
 consulta o catálogo para configurar o Bridge → o DAG busca a publicação de enriquecimento e
 materializa o **gold enriquecido**.
 
-## Estado desta branch
+## Iniciativa ativa
 
-`arch/bridge-enrichment` reorganiza a documentação para a arquitetura decidida. **O código
-ainda é o antigo.** O que muda aqui, nesta ordem:
-
-| # | Mudança | Situação |
-|---|---|---|
-| 0 | Extração completa no Airbyte (deletados incluídos, `start_date` 2025-01-01) | **feito** |
-| 1 | Gold parte do fato: `LEFT JOIN` nas dimensões, chaves vindas do fato | **feito** |
-| 2 | `dedupe_columns` reduzido à chave natural mínima, inclusive no fato | **feito** |
-| 3 | Bronze acumula: union com o existente antes do dedupe | **feito** |
-| 8 | Gold enriquecido: fetch da publicação, três `LEFT JOIN`, coluna `MAP` | pendente |
-
-Detalhe e armadilhas: [docs/architecture.md](docs/architecture.md).
-
-## Diagnóstico da perda de linhas no gold
-
-Medido em 11/09/2026. O `inner join` do gold descarta linhas do fato cuja campanha não está
-na dimensão `campaigns`.
-
-- **A causa principal era a extração incompleta, não o modo de sync.** As streams já eram
-  Incremental + Append, e `advertisers` Full Refresh + Append; o raw acumula. O conector,
-  porém, só trazia objetos modificados desde o `start_date` (2026-01-01) e omitia
-  deletados. Com isso, 54 de 68 campanhas do fato não tinham dimensão, e o gold perdia
-  R$ 30.065,43 de spend.
-- **Correção aplicada no Airbyte:** ligar *Include Deleted Data*, `start_date` 2025-01-01 e
-  **Clear data** dos streams. Limpar o raw **não** reseta o cursor do incremental.
-- **Hoje:** spend, impressões e cliques batem entre silver e gold (R$ 9.073.343,49). Ainda
-  se perdem 958 de 22.739 linhas, de 85 campanhas modificadas antes de 2025, e **todas** as
-  59 métricas dessas linhas são zero. O passo 1 fecha isso.
-
-**Linha não é dinheiro.** 66% do fato (14.967 linhas) são ad × dia com todas as métricas
-zeradas: o conector emite uma linha por ad por dia mesmo sem entrega. Meça a invariante por
-soma de métrica, não por contagem.
+`bridge-enrichment` — passos, próxima ação e decisões em aberto em
+[docs/plans/bridge-enrichment.md](docs/plans/bridge-enrichment.md). Plano único dos três
+repositórios.
 
 ## Arquitetura de enriquecimento (invariantes compartilhadas)
 
@@ -76,8 +47,8 @@ Valem nos três repositórios. Contradizer uma delas é bug, não escolha de imp
 | Camada | Caminho | Formato | Responsabilidade |
 |---|---|---|---|
 | Raw | `raw/airbyte/{platform}/{stream}/` | Parquet | Landing do Airbyte — nunca editar à mão. Acumula um arquivo por sync |
-| Bronze | `bronze/{platform}/{table}/` | Delta | Dedupe pela chave natural sobre todo o raw; alvo: acumular também |
-| Silver | `silver/{platform}/{table}/` | Delta | Renomes e tipos corretos |
+| Bronze | `bronze/{platform}/{table}/` | Delta | Camada acumuladora: union com o existente + dedupe pela chave natural |
+| Silver | `silver/{platform}/{table}/` | Delta | Renomes e tipos corretos; o fato descarta ad × dia sem nenhuma métrica |
 | Gold | `gold/{platform}/{fact}/` | Delta | Fatos no grão de negócio |
 
 **Existência de objeto vem do status, não de `_airbyte_extracted_at`.** No incremental, um
@@ -99,6 +70,7 @@ sumiu. Deletados chegam explicitamente com `*_STATUS_DELETE` em `secondary_statu
   mas vem `NULL` do conector. `ad_account_id` deriva da hierarquia, pela dimensão `ads`.
 - **Todo join do gold é `LEFT`, partindo do fato.** A extração nunca é garantidamente
   completa; o join não pode depender dela.
+- **Linha não é dinheiro.** Meça conservação por soma de métrica, não por contagem de linhas.
 - **Mudar `start_date` ou *Include Deleted* no Airbyte exige Clear data dos streams.**
 - A FastAPI de catálogo precisa inicializar o `SparkSession` no lifespan **antes** de aceitar
   tráfego. Trabalho Spark/MinIO é síncrono — rode fora do event loop.
@@ -120,8 +92,32 @@ pytest tests/transformers/tiktok/test_conservation.py  # invariante de conserva�
 
 | Arquivo | Quando ler |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | extração, conservação, gold enriquecido, contrato de publicação, plano de migração |
-| [docs/project-structure.md](docs/project-structure.md) | árvore de diretórios, convenções de nome, split layer/transform |
+| [docs/architecture.md](docs/architecture.md) | extração, acumulação, gold base e enriquecido, conservação, publicação |
+| [docs/project-structure.md](docs/project-structure.md) | árvore de diretórios, convenções de nome, split layer/transform, testes |
 | [docs/tech-stack.md](docs/tech-stack.md) | versões e práticas por biblioteca |
+| [docs/plans/](docs/plans/) | trabalho em andamento: iniciativa ativa e backlog |
 
 Skill `add-platform` (`.claude/skills/add-platform/`) para integrar uma plataforma nova.
+
+## Onde cada informação mora (compartilhado)
+
+| Tipo | Onde |
+|---|---|
+| Regra que vale sempre | `CLAUDE.md` |
+| Como e por que funciona; desenho decidido | `docs/*.md` — no presente, sem data, sem número de passo, volumes em ordem de grandeza |
+| O que falta, status, decisões em aberto, medições datadas | `docs/plans/<iniciativa>.md` |
+| Ideia ainda sem escopo | `docs/plans/backlog.md` |
+
+Iniciativa que envolve mais de um repositório tem um plano só, no repositório onde começou;
+os outros apontam para ele.
+
+Todo passo de uma iniciativa termina com: testes verdes → status e diário atualizados no
+plano → regra nova sobe para o `CLAUDE.md` e mudança de desenho para `docs/` → rótulos
+"alvo"/"legado" que ficaram falsos saem → a checagem abaixo volta vazia. Ao encerrar a
+iniciativa, o plano é apagado e o ponteiro sai do `CLAUDE.md`.
+
+```bash
+grep -rnE "\bpasso [0-9]|\bfeito\b|[0-9]{2}/[0-9]{2}/20[0-9]{2}" CLAUDE.md docs .claude --exclude-dir=plans 2>/dev/null
+```
+
+> Este bloco é espelhado nos três repositórios. Ao mudar, mude nos três.

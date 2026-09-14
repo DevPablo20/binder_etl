@@ -29,9 +29,8 @@ de nome.
 ## 1. Airbyte
 
 Documente a conexão em `airbyte/README.md`. Prefira **Incremental + Append** se o conector
-oferecer — reduz chamada de API e churn no raw. Evite Overwrite: hoje é o raw que acumula o
-histórico, um arquivo por sync. Se o conector só oferecer Overwrite, o bronze passa a
-**precisar** acumular (ver passo 3).
+oferecer — reduz chamada de API e churn no raw. Se o conector só oferecer Overwrite, tudo
+bem: o bronze acumula por conta própria (ver seção 3).
 
 - **Inclua deletados**, se o conector tiver a opção. Sem ela, objetos deletados nunca chegam
   às dimensões, mas as métricas deles chegam ao relatório.
@@ -60,17 +59,18 @@ demais faz um objeto que mudou de pai virar duas linhas — e a métrica duplica
 ## 3. Orquestradores de camada
 
 Estendem `BaseTransformer`. Cuidam de I/O no MinIO, loop de streams, `ETL_STRICT` e — no
-bronze — do dedupe.
+bronze — da acumulação.
 
-Com Append no raw, ler o raw inteiro e fazer dedupe já preserva o histórico. Se o raw for
-Overwrite, ou tiver retenção, o bronze **precisa** acumular: union com o Delta existente,
-`dedupe()`, `.cache()` + `.count()`, e só então `write_delta(mode="overwrite")`. Padrão em
+O bronze acumula sempre: lê o raw, une com o Delta existente (`_read_existing_bronze` +
+`_accumulate`), faz `dedupe()`, materializa com `.cache()` + `.count()` e só então
+`write_delta(mode="overwrite")`. Copie de `tiktok/bronze.py`; o porquê está em
 [docs/architecture.md](../../../docs/architecture.md).
 
 ## 4. Transforms
 
 Lógica pura de DataFrame, um módulo por stream/fato/entidade, registrados nos registries
-`SILVER_TRANSFORMS` e `GOLD_TRANSFORMS`.
+`SILVER_TRANSFORMS` e `GOLD_TRANSFORMS`. O transform de gold recebe `dict[str, DataFrame]`
+com os silver sources já lidos pelo orquestrador — não chama `read_delta`.
 
 ## 5. Colunas canônicas do silver
 

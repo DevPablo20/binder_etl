@@ -14,7 +14,7 @@ backend: `binder_app_backend/docs/architecture.md`.
 ```mermaid
 flowchart LR
     Airbyte["Airbyte abctl"] --> Raw["raw/airbyte/{platform}/{stream} — acumula"]
-    Raw --> Bronze["bronze — dedupe"]
+    Raw --> Bronze["bronze — acumula + dedupe"]
     Bronze --> Silver["silver/{platform}/{table}"]
     Silver --> Gold["gold/{platform}/ads_daily_metrics"]
     Silver --> CatalogBuild["linhas de catálogo"]
@@ -48,42 +48,15 @@ Comportamentos do conector que o pipeline precisa absorver:
 - **`advertiser_id` vem `NULL`** no `ads_reports_daily`, tanto no nível superior quanto em
   `dimensions.advertiser_id`. O fato só traz `ad_id`, `metrics.adgroup_id` e
   `metrics.campaign_id`; a conta deriva da hierarquia.
-- **Uma linha por ad por dia, mesmo sem entrega.** 66% do fato (14.967 de 22.739 linhas) tem
-  as 59 métricas zeradas.
+- **Uma linha por ad por dia, mesmo sem entrega.** Cerca de dois terços do relatório têm
+  todas as métricas zeradas — ver [Linhas sem atividade](#linhas-sem-atividade).
 - **Reextração do mesmo ad × dia** entre syncs incrementais — o dedupe do bronze é
   obrigatório, não otimização.
 
-## Diagnóstico da perda de linhas no gold
-
-Medido em 11/09/2026, reproduzível com `tests/test_conservation_tiktok.py`.
-
-**Antes da correção** (`start_date` 2026-01-01, sem deletados): o fato tinha 8.744 linhas e
-o gold 4.216. Todas as linhas perdidas tinham `campaign_id` ausente da dimensão `campaigns`
-— 54 das 68 campanhas do fato. Em dinheiro, R$ 30.065,43 (1,45% do spend), concentrados em
-01–02/01/2026: campanhas de 2025 que terminaram no início da janela e nunca mais foram
-modificadas. Descartados: fan-out (dimensões sem id duplicado), hierarquia divergente no
-join composto (0 casos) e duplicata no fato (0 pares ad × dia).
-
-**A hipótese de ontem estava errada.** Supunha-se que as dimensões vinham em Full Refresh +
-Overwrite, com um único snapshot no raw. Na verdade o raw já acumulava um arquivo por sync;
-o que faltava era a extração trazer os objetos.
-
-**Depois da correção** (Include Deleted, `start_date` 2025-01-01, Clear data):
-
-| | Silver (fato) | Gold |
-|---|---|---|
-| Linhas | 22.739 | 21.781 |
-| Spend | R$ 9.073.343,49 | R$ 9.073.343,49 |
-| Impressões | 2.296.452.634 | 2.296.452.634 |
-| Cliques | 13.844.358 | 13.844.358 |
-
-As 958 linhas restantes são de 85 campanhas cuja última modificação é anterior a 2025.
-Nenhuma das 59 métricas é diferente de zero nessas linhas. O `inner join` ainda as descarta;
-o passo 1 do plano fecha isso.
-
-**A lição:** conservação (os joins) e completude (a extração) são problemas diferentes. O
-`LEFT JOIN` garante que nada some *dado o que foi extraído*; só a extração garante que o
-extraído é tudo.
+**Completude e conservação são problemas diferentes.** A extração decide *o que* chega ao
+lake; os joins decidem se *o que chegou* sobrevive até o gold. O `LEFT JOIN` garante o
+segundo, nunca o primeiro — dimensão faltando por extração incompleta aparece como `NULL`,
+não como erro.
 
 ## Existência de objeto
 
@@ -95,44 +68,14 @@ Deletados chegam explicitamente em `secondary_status` — `CAMPAIGN_STATUS_DELET
 No incremental um objeto só é reextraído quando muda, então `extracted_at` é a última
 *modificação vista*, não a última vez que o objeto existiu.
 
-## Gold partindo do fato — feito (14/09/2026)
+## A acumulação no bronze
 
-Até aqui o gold encadeava quatro `inner join` a partir do relatório e selecionava as chaves
-pelas dimensões (`tc.campaign_id`, `tag.ad_group_id`). Qualquer lacuna de extração virava
-linha perdida — foi essa a causa da perda de R$ 30.065,43 registrada acima.
+O raw acumula um arquivo por sync, mas o bronze não depende disso: ele é a camada
+acumuladora. Isso protege o histórico se o raw ganhar retenção ou compactação, ou se algum
+stream — desta plataforma ou de uma futura — só oferecer Overwrite.
 
-Implementado em `transforms/gold/ads_daily_metrics.py`:
-
-- **Base é o fato** (`ads_reports_daily`); `ads`, `ad_groups`, `campaigns` e `advertisers`
-  entram por `LEFT JOIN`.
-- **Chaves de hierarquia vêm do fato** (`campaign_id`, `ad_group_id`, `ad_id`), que sempre as
-  carrega — não das dimensões, que podem faltar.
-- **`ad_account_id` vem da dimensão `ads`**, porque o fato não o traz. Linha sem dimensão
-  `ads` fica com conta `NULL`, mesmo que a campanha esteja vinculada.
-- **Atributo de dimensão ausente vira `NULL` no gold base**, não `'Não informado'`. O balde
-  explícito é decisão do gold *enriquecido* (passo 8), que já vai ler o gold base e decidir
-  o que fazer com cada `NULL` junto do enriquecimento — aqui, `NULL` é o registro preciso de
-  "faltou a dimensão".
-
-**Função pura, sem I/O.** `transform(sources, fact)` recebe um dict `{nome do silver source:
-DataFrame}` já carregado e devolve o gold — não lê nem escreve no MinIO. Quem faz I/O é
-`TikTokGoldTransformer` em `gold.py`, que lê cada silver source uma vez e entrega pronto.
-Mesma separação camada/transform que `silver.py` já usa. É o que torna a regra testável sem
-MinIO: `tests/test_gold_ads_daily_metrics.py` constrói DataFrames sintéticos — inclusive uma
-linha de fato órfã, sem nenhuma dimensão — e prova que ela sobrevive. Esse teste é a garantia
-real; o teste de conservação sozinho não basta, porque nos dados de hoje não sobra nenhum
-órfão para expor um `inner join` que voltasse por engano.
-
-## A acumulação no bronze — feito (14/09/2026)
-
-Até aqui o bronze lia o raw inteiro, fazia dedupe e sobrescrevia. Como o raw acumula um
-arquivo por sync, isso já preservava o histórico *hoje*. A acumulação no bronze é **defesa**
-para quando isso deixar de valer: o raw ganhar retenção ou compactação, ou algum stream
-(desta plataforma ou de uma futura, como a Kwai) só oferecer Overwrite.
-
-Implementado em `bronze.py`, com a leitura do bronze existente e a decisão de unir separadas
-(`_read_existing_bronze` faz I/O, `_accumulate` é pura — mesma separação camada/transform da
-Etapa 3):
+Em `bronze.py`, a leitura do bronze existente e a decisão de unir ficam separadas
+(`_read_existing_bronze` faz I/O, `_accumulate` é pura):
 
 ```python
 new = read_raw_parquet(spark, stream.raw_path)
@@ -145,22 +88,18 @@ cleaned.count()                       # materializa antes de sobrescrever a orig
 write_delta(cleaned, "bronze", stream.bronze_table_name, mode="overwrite")
 ```
 
-`BaseTransformer.dedupe` já ordena por `_airbyte_extracted_at desc`, então a versão mais
-recente vence, que é exatamente o SCD tipo 1 — inclusive entre rodadas, não só dentro do raw
-de uma rodada.
+`BaseTransformer.dedupe` ordena por `_airbyte_extracted_at desc`, então a versão mais
+recente vence — o SCD tipo 1, entre rodadas e dentro de uma rodada.
 
-`tests/test_bronze_accumulate.py` prova o cenário que importa sem MinIO: um objeto presente
-no bronze acumulado mas ausente do raw desta rodada (retenção simulada) sobrevive depois de
-`_accumulate` + `dedupe`. Verificado também com dados reais: bronze → silver → gold rodado
-duas vezes seguidas dá exatamente as mesmas contagens (idempotência), e a conservação
-silver × gold continua batendo.
+`tests/transformers/tiktok/bronze/test_accumulate.py` prova o cenário que importa sem MinIO:
+um objeto presente no bronze mas ausente do raw desta rodada sobrevive a `_accumulate` +
+`dedupe`.
 
-### Armadilha: chave de dedupe composta demais — corrigido
+### Chave de dedupe: a chave natural mínima
 
-O raw **já** acumula versões de cada objeto. Com chave composta, se um ad mudasse de
-ad_group, as duas versões teriam chaves diferentes, o dedupe não colapsaria, e a métrica
-duplicaria no join do gold. Corrigido em 14/09/2026: todo stream dedupe pela chave natural
-mínima.
+O raw e o bronze acumulam versões de cada objeto. Com chave composta, um ad que mudasse de
+ad_group teria duas versões com chaves diferentes, o dedupe não colapsaria, e a métrica
+duplicaria no join do gold. Por isso cada stream deduplica só pelo próprio id:
 
 | Stream | Chave de dedupe |
 |---|---|
@@ -170,11 +109,6 @@ mínima.
 | `ads` | `ad_id` |
 | `ads_reports_daily` | `ad_id, stat_time_day` |
 
-Verificado depois da mudança: nenhuma dimensão ganhou linha duplicada (contagem = ids
-distintos em todas as quatro) e spend/impressões/cliques seguem idênticos entre silver e
-gold — como esperado, já que nenhum objeto trocou de pai no período extraído. A mudança é
-defesa para quando isso acontecer, não correção de um bug observado hoje.
-
 ### Outras ressalvas
 
 - **Materialize antes de escrever** (`.cache()` + `.count()`). Lê-se e sobrescreve-se o mesmo
@@ -183,6 +117,36 @@ defesa para quando isso acontecer, não correção de um bug observado hoje.
 - **Read-modify-write relê a tabela inteira** a cada rodada. Em centenas de objetos é
   irrelevante; se virar milhões, aí sim vale um `MERGE`. É problema de escala, não de
   correção.
+
+## Linhas sem atividade
+
+O transform silver de `ads_reports_daily` descarta ad × dia em que **todas** as métricas
+numéricas são nulas ou zero. Uma linha com spend 0 mas alguma conversão sobrevive. Nenhuma
+soma muda, porque o que sai já era zero — o teste de conservação cobre bronze × silver.
+
+Unitário: `tests/transformers/tiktok/silver/test_ads_reports_daily_filter.py`.
+
+## Gold partindo do fato
+
+Em `transforms/gold/ads_daily_metrics.py`:
+
+- **Base é o fato** (`ads_reports_daily`); `ads`, `ad_groups`, `campaigns` e `advertisers`
+  entram por `LEFT JOIN`.
+- **Chaves de hierarquia vêm do fato** (`campaign_id`, `ad_group_id`, `ad_id`), que sempre as
+  carrega — não das dimensões, que podem faltar.
+- **`ad_account_id` vem da dimensão `ads`**, porque o fato não o traz. Linha sem dimensão
+  `ads` fica com conta `NULL`, mesmo que a campanha esteja vinculada.
+- **Atributo de dimensão ausente vira `NULL` no gold base**, não `'Não informado'`. O balde
+  explícito é responsabilidade do gold enriquecido; no gold base, `NULL` é o registro preciso
+  de "faltou a dimensão".
+
+**Função pura, sem I/O.** `transform(sources, fact)` recebe um dict `{nome do silver source:
+DataFrame}` já carregado e devolve o gold. Quem faz I/O é `TikTokGoldTransformer` em
+`gold.py`, que lê cada silver source uma vez. É o que torna a regra testável sem MinIO:
+`tests/transformers/tiktok/gold/test_ads_daily_metrics.py` constrói uma linha de fato órfã,
+sem nenhuma dimensão, e prova que ela sobrevive. Esse teste é a garantia do `LEFT JOIN` — o
+de conservação sozinho não basta, porque o filtro do silver remove os órfãos vazios que
+exporiam um `inner join`.
 
 ## Contrato de join com o Bridge
 
@@ -202,6 +166,8 @@ não nativo.
 
 ## Gold enriquecido
 
+Desenho alvo:
+
 ```
 gold_enriched = ads_daily_metrics
     LEFT JOIN enrichment_campaign  ON (ad_account_id, campaign_id)
@@ -214,8 +180,8 @@ resolução de conflito** — porque nenhum atributo é declarado em dois nívei
 acontece sozinha: a linha do fato é ad × dia e já carrega `campaign_id` e `ad_group_id`, então
 o atributo declarado acima desce pelo próprio join.
 
-Como `ad_account_id` é derivado no fato, uma linha sem dimensão `ads` não casa com nenhum
-enriquecimento, mesmo que a campanha esteja vinculada. Ver "Decisões em aberto".
+Como `ad_account_id` é derivado no fato, uma linha sem dimensão `ads` não casa com um
+enriquecimento que use a conta na chave, mesmo que a campanha esteja vinculada.
 
 ### Eixos dinâmicos viram um MAP, não colunas
 
@@ -231,33 +197,28 @@ publicação. Valor nativo sem tradução **nunca quebra a rodada**: o ad recebe
 e o gold carrega `format_native_value` com o valor cru, para o backend montar a fila de
 pendências ordenada por investimento afetado.
 
-Valores de `ad_format` no TikTok (675 ads):
+`ad_format` do TikTok tem cardinalidade muito baixa:
 
-| `ad_format` | Ads | Spend |
-|---|---|---|
-| `SINGLE_VIDEO` | 603 | R$ 8,01 mi |
-| `CAROUSEL_ADS` | 62 (7 com `is_aco = true`) | R$ 952 mil |
-| `NULL` | 10 | R$ 115 mil |
+- `SINGLE_VIDEO` concentra a maior parte do investimento;
+- `CAROUSEL_ADS` inclui os anúncios ACO (`is_aco = true`);
+- **nulo** é valor legítimo: são os posts autorizados (`identity_type = BC_AUTH_TT`).
 
-- **`NULL` é valor legítimo**: são os ads com `identity_type = BC_AUTH_TT` (posts
-  autorizados). `native_value` é `NOT NULL` no backend, então o ETL precisa emitir um valor
-  explícito para esse caso em vez de `NULL`.
-- **`ad_format` não carrega duração.** Ele distingue vídeo de carrossel, mas não 15s de 30s
-  — o sub-formato não sai só dele.
+`ad_format` distingue vídeo de carrossel, mas **não carrega duração** — não separa 15s de 30s.
 
 ## Invariante de conservação
 
 > A soma de qualquer métrica no gold enriquecido, sem filtro, tem que ser idêntica à soma no
 > fato cru. Se divergir, o enriquecimento está comendo dado.
 
-- Todo join de enriquecimento é `LEFT`, sem exceção — e o gold base também (ver acima).
-- `NULL` vira balde explícito: `'Não informado'` é categoria legítima que aparece nos
-  gráficos, não filtro implícito.
-- **A invariante é teste automático do pipeline.** `tests/test_conservation_tiktok.py`
-  compara linhas, `spend`, `impressions` e `clicks` entre o fato silver e o gold. Divergência
-  para menos é join descartando; para mais é fan-out. Hoje falha só na contagem de linhas.
-- **Linha não é dinheiro.** A perda de 52% das linhas era 1,45% do spend. Leia a divergência
-  pela soma de métrica antes de dimensionar o problema.
+- Todo join é `LEFT`, sem exceção — no gold base e no enriquecido.
+- `NULL` vira balde explícito no enriquecido: `'Não informado'` é categoria legítima que
+  aparece nos gráficos, não filtro implícito.
+- **A invariante é teste automático.** `tests/transformers/tiktok/test_conservation.py`
+  compara linhas, `spend`, `impressions` e `clicks` entre bronze × silver e silver × gold.
+  Divergência para menos é join descartando (ou filtro cortando linha com atividade); para
+  mais é fan-out.
+- **Linha não é dinheiro.** Meça a divergência pela soma de métrica antes de dimensionar o
+  problema: uma perda grande em linhas pode ser quase nada em spend, e vice-versa.
 
 ## Publicação
 
@@ -270,64 +231,6 @@ tipo 1 não guarda: não se sabe *quando* um ad_group mudou de território, mas 
 publicação #7 gerou aqueles números e a #8 gerou estes.
 
 Transporte por HTTP e não por JDBC ou S3: é simétrico ao `catalog-api` que já existe na
-direção oposta, não exige credencial S3 no backend nem driver JDBC no Spark. São no máximo
-~1.100 linhas de JSON hoje (70 campanhas, 350 ad groups, 675 ads) —
-`spark.createDataFrame()` resolve. Se crescer, troca-se por parquet no MinIO
-sem mudar o modelo.
-
-## Plano de migração
-
-A numeração é compartilhada com o backend e o frontend.
-
-| # | Passo | Repo |
-|---|---|---|
-| 0 | Extração completa no Airbyte e diagnóstico medido — **feito** | **etl** |
-| 1 | Gold parte do fato: `LEFT JOIN`, chaves do fato, conta derivada de `ads` — **feito** | **etl** |
-| 2 | Reduzir `dedupe_columns` à chave natural mínima, inclusive no fato — **feito** | **etl** |
-| 3 | Acumular no bronze (defesa contra retenção do raw) — **feito** | **etl** |
-| 4 | Criar as tabelas novas do Bridge | backend |
-| 5 | Migrar dados de `platform_object_map` | backend |
-| 6 | Tabela de tradução de formato + fila de pendências | backend |
-| 7 | `enrichment_publication`, snapshot e endpoint | backend |
-| 8 | Gold enriquecido: fetch, três `LEFT JOIN`, `MAP`, teste de invariante | **etl** |
-| 9 | Telas de configuração | frontend |
-| 10 | Remover `platform_object_map` | backend |
-
-Os passos 1–3 são independentes do backend e podem começar já. O passo 1 é o que faz
-`tests/test_conservation_tiktok.py` passar.
-
-## Decisões em aberto
-
-| Decisão | Contexto | Bloqueia |
-|---|---|---|
-| Join de enriquecimento por `campaign_id` sozinho, ou por `(ad_account_id, campaign_id)`? | O fato não traz conta; IDs do TikTok são únicos globalmente | passo 8 |
-| Recuar o `start_date` antes de 2025? | Traria as 85 campanhas sem gasto e o histórico anterior — decisão de negócio, não de correção | — |
-| Valor explícito para `ad_format` nulo, e de onde vem o sub-formato | `native_value NOT NULL`; `ad_format` não carrega duração | passo 6 |
-
-**Resolvidas:**
-
-- **Filtrar no silver as linhas com todas as métricas zeradas?** Sim (13/09/2026). O
-  transform de `ads_reports_daily` descarta ad × dia sem nenhuma métrica não-nula/não-zero.
-  66% do fato caía nessa regra; nenhuma soma muda — `tests/test_conservation_tiktok.py`
-  cobre bronze × silver.
-- **Dimensão ausente vira `NULL` ou `'Não informado'` no gold base?** `NULL` (14/09/2026).
-  Ver [Gold partindo do fato](#gold-partindo-do-fato--feito-14092026).
-
-## A verificar
-
-Nada pendente hoje.
-
-Resolvidas em 11/09/2026: "14 campanhas para 17 advertisers" era extração incompleta (hoje
-são 70 campanhas; as 9 contas sem campanha não tiveram gasto no período). Valores distintos
-de `ad_format`: 3, não ~6.
-
-Resolvida em 14/09/2026: read-modify-write no mesmo caminho Delta, com `.cache()` antes do
-`write_delta`. Rodado duas vezes seguidas em produção (bronze → silver → gold) sem
-divergência entre as rodadas.
-
-## Deferido
-
-- Trigger automático do Airbyte no Airflow (hoje `abctl` manual)
-- Segundo fato para segmentações (age, gender, region) — grão maior, mecanismo diferente
-- Retenção/compactação do raw quando o volume justificar — ao ligar, o passo 3 vira
-  obrigatório
+direção oposta, não exige credencial S3 no backend nem driver JDBC no Spark. O snapshot é da
+ordem de mil linhas de JSON — `spark.createDataFrame()` resolve. Se crescer, troca-se por
+parquet no MinIO sem mudar o modelo.

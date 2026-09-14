@@ -1,26 +1,34 @@
-from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import DataFrame
 from pyspark.sql.functions import col
 
-from src.io.reader import read_delta
-from src.transformers.tiktok.tables import GoldFactConfig, PLATFORM
+from src.transformers.tiktok.tables import GoldFactConfig
 
 
-def transform(spark: SparkSession, _fact: GoldFactConfig) -> DataFrame:
-    silver_advertisers = read_delta(spark, "silver", f"{PLATFORM}/advertisers")
-    silver_campaigns = read_delta(spark, "silver", f"{PLATFORM}/campaigns")
-    silver_ad_groups = read_delta(spark, "silver", f"{PLATFORM}/ad_groups")
-    silver_ads = read_delta(spark, "silver", f"{PLATFORM}/ads")
-    silver_ads_reports_daily = read_delta(
-        spark, "silver", f"{PLATFORM}/ads_reports_daily"
-    )
+def transform(sources: dict[str, DataFrame], _fact: GoldFactConfig) -> DataFrame:
+    """Monta o gold ads_daily_metrics. Função pura — recebe os DataFrames do silver já
+    carregados, não faz I/O. Quem lê do MinIO é `TikTokGoldTransformer` em `gold.py`.
 
-    selected_advertisers = silver_advertisers.select(
+    O fato (`ads_reports_daily`) é a base, e as quatro dimensões entram por `LEFT JOIN`:
+    a extração nunca é garantidamente completa, e uma dimensão faltando não pode
+    descartar a linha do fato. As chaves de hierarquia (`campaign_id`, `ad_group_id`,
+    `ad_id`) vêm do fato, que sempre as carrega — nunca das dimensões, que podem faltar.
+
+    `ad_account_id` não existe no fato (o conector do TikTok o emite nulo no relatório)
+    e é derivado da dimensão `ads`. Uma linha cujo ad não está na dimensão fica sem conta,
+    mesmo que a campanha esteja vinculada — ver "Decisões em aberto" em docs/architecture.md.
+    """
+    advertisers = sources["advertisers"]
+    campaigns = sources["campaigns"]
+    ad_groups = sources["ad_groups"]
+    ads = sources["ads"]
+    fact = sources["ads_reports_daily"]
+
+    selected_advertisers = advertisers.select(
         col("ad_account_id"),
         col("ad_account_name"),
     )
 
-    selected_campaigns = silver_campaigns.select(
-        col("ad_account_id"),
+    selected_campaigns = campaigns.select(
         col("campaign_id"),
         col("campaign_name"),
         col("campaign_status"),
@@ -29,25 +37,21 @@ def transform(spark: SparkSession, _fact: GoldFactConfig) -> DataFrame:
         col("budget"),
     )
 
-    selected_ad_groups = silver_ad_groups.select(
-        col("ad_account_id"),
-        col("campaign_id"),
+    selected_ad_groups = ad_groups.select(
         col("ad_group_id"),
         col("optimization_goal"),
         col("billing_event"),
     )
 
-    selected_ads = silver_ads.select(
-        col("ad_account_id"),
-        col("campaign_id"),
-        col("ad_group_id"),
+    selected_ads = ads.select(
         col("ad_id"),
+        col("ad_account_id"),
         col("ad_name"),
         col("ad_text"),
         col("display_name"),
     )
 
-    selected_ads_reports_daily = silver_ads_reports_daily.select(
+    selected_fact = fact.select(
         col("campaign_id"),
         col("ad_group_id"),
         col("ad_id"),
@@ -78,52 +82,42 @@ def transform(spark: SparkSession, _fact: GoldFactConfig) -> DataFrame:
     )
 
     joined = (
-        selected_ads_reports_daily.alias("tard")
+        selected_fact.alias("tard")
         .join(
             selected_ads.alias("tad"),
-            on=(
-                (col("tard.ad_id") == col("tad.ad_id"))
-                & (col("tard.ad_group_id") == col("tad.ad_group_id"))
-                & (col("tard.campaign_id") == col("tad.campaign_id"))
-            ),
-            how="inner",
+            on=col("tard.ad_id") == col("tad.ad_id"),
+            how="left",
         )
         .join(
             selected_ad_groups.alias("tag"),
-            on=(
-                (col("tad.ad_group_id") == col("tag.ad_group_id"))
-                & (col("tad.campaign_id") == col("tag.campaign_id"))
-            ),
-            how="inner",
+            on=col("tard.ad_group_id") == col("tag.ad_group_id"),
+            how="left",
         )
         .join(
             selected_campaigns.alias("tc"),
-            on=(
-                (col("tag.campaign_id") == col("tc.campaign_id"))
-                & (col("tag.ad_account_id") == col("tc.ad_account_id"))
-            ),
-            how="inner",
+            on=col("tard.campaign_id") == col("tc.campaign_id"),
+            how="left",
         )
         .join(
             selected_advertisers.alias("taa"),
-            on=(col("tc.ad_account_id") == col("taa.ad_account_id")),
-            how="inner",
+            on=col("tad.ad_account_id") == col("taa.ad_account_id"),
+            how="left",
         )
     )
 
     return joined.select(
-        col("taa.ad_account_id"),
+        col("tad.ad_account_id"),
         col("taa.ad_account_name"),
-        col("tc.campaign_id"),
+        col("tard.campaign_id"),
         col("tc.campaign_name"),
         col("tc.campaign_status"),
         col("tc.campaign_operation_status"),
         col("tc.objective_type"),
         col("tc.budget"),
-        col("tag.ad_group_id"),
+        col("tard.ad_group_id"),
         col("tag.optimization_goal"),
         col("tag.billing_event"),
-        col("tad.ad_id"),
+        col("tard.ad_id"),
         col("tad.ad_name"),
         col("tad.ad_text"),
         col("tad.display_name"),

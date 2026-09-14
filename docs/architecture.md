@@ -95,21 +95,33 @@ Deletados chegam explicitamente em `secondary_status` — `CAMPAIGN_STATUS_DELET
 No incremental um objeto só é reextraído quando muda, então `extracted_at` é a última
 *modificação vista*, não a última vez que o objeto existiu.
 
-## Gold partindo do fato
+## Gold partindo do fato — feito (14/09/2026)
 
-O gold atual encadeia quatro `inner join` a partir do relatório e seleciona as chaves pelas
-dimensões (`tc.campaign_id`, `tag.ad_group_id`). Qualquer lacuna de extração vira linha
-perdida.
+Até aqui o gold encadeava quatro `inner join` a partir do relatório e selecionava as chaves
+pelas dimensões (`tc.campaign_id`, `tag.ad_group_id`). Qualquer lacuna de extração virava
+linha perdida — foi essa a causa da perda de R$ 30.065,43 registrada acima.
 
-O alvo:
+Implementado em `transforms/gold/ads_daily_metrics.py`:
 
 - **Base é o fato** (`ads_reports_daily`); `ads`, `ad_groups`, `campaigns` e `advertisers`
   entram por `LEFT JOIN`.
 - **Chaves de hierarquia vêm do fato** (`campaign_id`, `ad_group_id`, `ad_id`), que sempre as
   carrega — não das dimensões, que podem faltar.
 - **`ad_account_id` vem da dimensão `ads`**, porque o fato não o traz. Linha sem dimensão
-  fica com conta `NULL` e cai no balde explícito.
-- Atributo de dimensão ausente vira `'Não informado'`, nunca filtro.
+  `ads` fica com conta `NULL`, mesmo que a campanha esteja vinculada.
+- **Atributo de dimensão ausente vira `NULL` no gold base**, não `'Não informado'`. O balde
+  explícito é decisão do gold *enriquecido* (passo 8), que já vai ler o gold base e decidir
+  o que fazer com cada `NULL` junto do enriquecimento — aqui, `NULL` é o registro preciso de
+  "faltou a dimensão".
+
+**Função pura, sem I/O.** `transform(sources, fact)` recebe um dict `{nome do silver source:
+DataFrame}` já carregado e devolve o gold — não lê nem escreve no MinIO. Quem faz I/O é
+`TikTokGoldTransformer` em `gold.py`, que lê cada silver source uma vez e entrega pronto.
+Mesma separação camada/transform que `silver.py` já usa. É o que torna a regra testável sem
+MinIO: `tests/test_gold_ads_daily_metrics.py` constrói DataFrames sintéticos — inclusive uma
+linha de fato órfã, sem nenhuma dimensão — e prova que ela sobrevive. Esse teste é a garantia
+real; o teste de conservação sozinho não basta, porque nos dados de hoje não sobra nenhum
+órfão para expor um `inner join` que voltasse por engano.
 
 ## A acumulação no bronze
 
@@ -263,7 +275,7 @@ A numeração é compartilhada com o backend e o frontend.
 | # | Passo | Repo |
 |---|---|---|
 | 0 | Extração completa no Airbyte e diagnóstico medido — **feito** | **etl** |
-| 1 | Gold parte do fato: `LEFT JOIN`, chaves do fato, conta derivada de `ads` | **etl** |
+| 1 | Gold parte do fato: `LEFT JOIN`, chaves do fato, conta derivada de `ads` — **feito** | **etl** |
 | 2 | Reduzir `dedupe_columns` à chave natural mínima, inclusive no fato — **feito** | **etl** |
 | 3 | Acumular no bronze (defesa contra retenção do raw) | **etl** |
 | 4 | Criar as tabelas novas do Bridge | backend |
@@ -281,10 +293,18 @@ Os passos 1–3 são independentes do backend e podem começar já. O passo 1 é
 
 | Decisão | Contexto | Bloqueia |
 |---|---|---|
-| Filtrar no silver as linhas com todas as métricas zeradas? | 66% do fato; nenhuma soma muda. Reduz volume e ruído | passo 1 |
 | Join de enriquecimento por `campaign_id` sozinho, ou por `(ad_account_id, campaign_id)`? | O fato não traz conta; IDs do TikTok são únicos globalmente | passo 8 |
 | Recuar o `start_date` antes de 2025? | Traria as 85 campanhas sem gasto e o histórico anterior — decisão de negócio, não de correção | — |
 | Valor explícito para `ad_format` nulo, e de onde vem o sub-formato | `native_value NOT NULL`; `ad_format` não carrega duração | passo 6 |
+
+**Resolvidas:**
+
+- **Filtrar no silver as linhas com todas as métricas zeradas?** Sim (13/09/2026). O
+  transform de `ads_reports_daily` descarta ad × dia sem nenhuma métrica não-nula/não-zero.
+  66% do fato caía nessa regra; nenhuma soma muda — `tests/test_conservation_tiktok.py`
+  cobre bronze × silver.
+- **Dimensão ausente vira `NULL` ou `'Não informado'` no gold base?** `NULL` (14/09/2026).
+  Ver [Gold partindo do fato](#gold-partindo-do-fato--feito-14092026).
 
 ## A verificar
 

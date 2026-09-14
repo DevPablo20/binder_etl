@@ -1,5 +1,6 @@
 import logging
 
+from pyspark.sql import DataFrame
 from pyspark.sql.utils import AnalysisException
 
 from src.config import settings
@@ -24,10 +25,11 @@ class TikTokGoldTransformer(BaseTransformer):
     def _process_fact(self, fact: GoldFactConfig) -> None:
         logger.info("Processing gold fact: %s", fact.name)
 
-        if not self._silver_sources_available(fact):
+        sources = self._read_silver_sources(fact)
+        if sources is None:
             return
 
-        df = GOLD_TRANSFORMS[fact.name](self.spark, fact)
+        df = GOLD_TRANSFORMS[fact.name](sources, fact)
         if df.isEmpty():
             self._handle_empty_result(fact)
             return
@@ -41,38 +43,49 @@ class TikTokGoldTransformer(BaseTransformer):
             row_count,
         )
 
-    def _silver_sources_available(self, fact: GoldFactConfig) -> bool:
+    def _read_silver_sources(
+        self, fact: GoldFactConfig
+    ) -> dict[str, DataFrame] | None:
+        """Lê cada silver source uma vez e devolve pronto para o transform (função pura).
+
+        `None` sinaliza que algum source falta ou está vazio — o fato inteiro é pulado
+        (ou levanta, com `ETL_STRICT`), igual ao comportamento anterior.
+        """
+        sources: dict[str, DataFrame] = {}
         for source in fact.silver_sources:
             table_path = f"{PLATFORM}/{source}"
             try:
                 df = read_delta(self.spark, "silver", table_path)
             except AnalysisException as exc:
-                return self._handle_missing_silver(fact, source, exc)
+                self._handle_missing_silver(fact, source, exc)
+                return None
             except Exception as exc:
                 if self._is_missing_path_error(exc):
-                    return self._handle_missing_silver(fact, source, exc)
+                    self._handle_missing_silver(fact, source, exc)
+                    return None
                 raise
 
             if df.isEmpty():
-                return self._handle_empty_silver(fact, source)
+                self._handle_empty_silver(fact, source)
+                return None
 
-        return True
+            sources[source] = df
+
+        return sources
 
     def _handle_missing_silver(
         self, fact: GoldFactConfig, source: str, exc: Exception
-    ) -> bool:
+    ) -> None:
         message = f"Silver source missing or unreadable for {fact.name}/{source}: {exc}"
         if settings.etl_strict:
             raise RuntimeError(message) from exc
         logger.warning("%s — skipping fact", message)
-        return False
 
-    def _handle_empty_silver(self, fact: GoldFactConfig, source: str) -> bool:
+    def _handle_empty_silver(self, fact: GoldFactConfig, source: str) -> None:
         message = f"Silver source empty for {fact.name}/{source}"
         if settings.etl_strict:
             raise RuntimeError(message)
         logger.warning("%s — skipping fact", message)
-        return False
 
     def _handle_empty_result(self, fact: GoldFactConfig) -> None:
         message = f"Gold transform produced no rows for {fact.name}"

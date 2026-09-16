@@ -10,7 +10,7 @@ Plano único dos três repositórios (`binder_etl`, `binder_app_backend`,
 
 ## Próxima ação
 
-Decidir **D9** (ordem de execução dos passos 4–9) e **D1–D3** (constraints do binding).
+Decidir **D9** (ordem de execução dos passos 4–9) e **D2–D3** (constraints do binding).
 Nenhuma entidade nova no backend antes disso.
 
 ## Objetivo
@@ -31,7 +31,7 @@ classificação. Os motivos estão em "Fora de escopo" de `binder_app_backend/do
 | 1a | Silver descarta ad × dia sem nenhuma métrica | etl | feito 14/09 |
 | 2 | `dedupe_columns` na chave natural mínima, inclusive no fato | etl | feito 14/09 |
 | 3 | Bronze acumula: union com o existente antes do dedupe | etl | feito 14/09 |
-| 4 | Tabelas novas do Bridge, índices de apoio e FKs compostas | backend | pendente — bloqueado por D1–D3, D9 |
+| 4 | Tabelas novas do Bridge, índices de apoio e FKs compostas | backend | pendente — bloqueado por D2, D3, D9 |
 | 5 | Migrar dados de `platform_object_map` para as tabelas novas | backend | pendente |
 | 6 | Tradução de formato + fila de pendências | backend | pendente — bloqueado por D5, D8 |
 | 7 | `enrichment_publication`, snapshot e endpoint | backend | pendente — bloqueado por D4 |
@@ -77,7 +77,17 @@ As telas atuais falam com `PlatformObjectMap`.
 
 - **4** — DDL em `binder_app_backend/docs/architecture.md`; use a skill `create-entities`.
   Revise a migration gerada: chave composta é onde o TypeORM mais erra. Precisa do índice
-  único de apoio `sub_grouping (grouping_id, id)`.
+  único de apoio `sub_grouping (grouping_id, id)`. O baseline já traz a unicidade de D1
+  (`platform_account` em `UNIQUE (platform_id, external_account_id)`) — é ela que faz
+  `UNIQUE (platform_account_id, external_campaign_id)` bastar no binding. Em base com dado,
+  antes de aplicar essa unicidade, rodar:
+
+  ```sql
+  SELECT platform_id, external_account_id, COUNT(DISTINCT client_id)
+  FROM platform_account GROUP BY 1,2 HAVING COUNT(DISTINCT client_id) > 1;
+  ```
+
+  Tem que voltar vazio; cada linha é uma decisão manual de qual cliente fica.
 - **5** — Vai revelar sujeira. Ao transformar `campaign_id` de digitado em derivado, maps de
   ad apontando para campanha diferente da do ad_group vão bater na FK. É o sistema
   funcionando: trate como relatório a resolver, não como falha do script. Enquanto a tela de
@@ -99,7 +109,6 @@ As telas atuais falam com `PlatformObjectMap`.
 
 | # | Decisão | Contexto | Bloqueia |
 |---|---|---|---|
-| D1 | Unicidade do binding com conta compartilhada: `UNIQUE (platform, external_account_id, external_campaign_id)`? | `platform_account` tem uma linha por cliente. Com `UNIQUE (platform_account_id, external_campaign_id)`, a mesma campanha pode ser vinculada a dois clientes — e o `LEFT JOIN` do enriquecido, pela chave externa, duplica a métrica. Pergunta de negócio: uma campanha da plataforma pertence a exatamente um cliente? | 4 |
 | D2 | Como amarrar o eixo à campanha vinculada | A DDL garante que o valor pertence ao eixo, mas não que o eixo (`grouping.campaign_id`) é da campanha do binding. Opções: copiar `campaign_id` na classificação amarrado por FK composta ao binding (cópia que não diverge), ou trigger | 4 |
 | D3 | FK `(channel_id, buying_type_id) → channel_buying_type` e cliente da campanha = cliente da conta | Hoje essas regras só existem em texto; a invariante 4 pede constraint | 4 |
 | D4 | Contrato de status da publicação entre DAG e backend | O DAG precisa marcar `processing`/`materialized`/`failed`; falta endpoint e autenticação do DAG no backend | 7 |
@@ -155,3 +164,25 @@ Registro datado, só acrescentado. Números medidos moram aqui, não na referên
   flakiness de "Python worker exited" vinha da churn de sessões e da disputa de cores.
 - **14/09** — Documentação reorganizada: estado de trabalho saiu de `CLAUDE.md` e `docs/`
   para este arquivo, nos três repositórios.
+- **16/09** — **D1 fechada: conta de plataforma pertence a exatamente um cliente.** A
+  unicidade que protege a conservação mora em `platform_account`
+  (`UNIQUE (platform_id, external_account_id)`), não numa chave nova no binding: com ela
+  `platform_account_id` vira bijeção com as coordenadas externas, e o
+  `UNIQUE (platform_account_id, external_campaign_id)` que já está na DDL passa a bastar —
+  sem desnormalizar `external_account_id` no binding. A razão é que o fato do lake não
+  carrega cliente: só as coordenadas externas chegam ao join, então duas linhas para a mesma
+  conta duplicariam métrica, contra a invariante 5.
+
+  Descoberto no caminho: o `@Unique(['platform','externalAccountId','client'])` de 24/07 não
+  resolvia o caso que o motivou — campanha Always On com uma conta veiculando até março/2026
+  e outra de março em diante. Duas contas para o **mesmo** cliente nunca esbarraram na chave
+  de duas colunas; o que ela proíbe é a mesma conta repetida. O modelo alvo já cobre esse
+  caso sem multi-cliente: `campaign_id` no binding não é único, então as duas contas ganham
+  bindings próprios apontando para a mesma campanha de negócio.
+
+  Revertido nos três repositórios: constraint + migration, DTO bulk (`clientIds[]` →
+  `clientId`) e `createMany` sem produto cartesiano, `AccountMatchingPage` com tabela única
+  e diálogo single-select, e as afirmações de multi-cliente em `CLAUDE.md`,
+  `docs/bridge-matching.md` e `docs/domain-model.md`. Deixado de fora de propósito:
+  `CampaignMatchingPage` ainda tem a seção "dois ou mais clientes" — vira código morto e
+  morre na troca de endpoint do passo 9, junto com o resto da tela.

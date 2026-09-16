@@ -10,8 +10,9 @@ Plano único dos três repositórios (`binder_etl`, `binder_app_backend`,
 
 ## Próxima ação
 
-Começar o **passo 4** — nenhuma decisão o bloqueia, e a fatia 1 está livre até o gold. D5, D6,
-D8 e D10 só aparecem nas fatias 3 e no card de cobertura.
+Passo 7 da fatia 1 — `enrichment_publication`, `enrichment_run`, snapshot e os dois endpoints
+do DAG. Desenho fechado na D4, em `binder_app_backend/docs/architecture.md`. Antes disso,
+revincular as 17 contas e recriar o cliente Embratur pela UI (o banco foi recriado no passo 4).
 
 ## Objetivo
 
@@ -31,7 +32,7 @@ classificação. Os motivos estão em "Fora de escopo" de `binder_app_backend/do
 | 1a | Silver descarta ad × dia sem nenhuma métrica | etl | feito 14/09 |
 | 2 | `dedupe_columns` na chave natural mínima, inclusive no fato | etl | feito 14/09 |
 | 3 | Bronze acumula: union com o existente antes do dedupe | etl | feito 14/09 |
-| 4 | Tabelas novas do Bridge, índices de apoio e FKs compostas | backend | pendente — desbloqueado |
+| 4 | Tabelas novas do Bridge, índices de apoio e FKs compostas | backend | feito 16/09 |
 | 5 | Migrar dados de `platform_object_map` para as tabelas novas | backend | vazio — nada a migrar |
 | 6 | Tradução de formato + fila de pendências | backend | pendente — bloqueado por D5, D8 |
 | 7 | `enrichment_publication`, `enrichment_run`, snapshot e endpoints | backend | pendente — desbloqueado |
@@ -360,6 +361,40 @@ Registro datado, só acrescentado. Números medidos moram aqui, não na referên
   técnica de rastreio; cliente e campanha de negócio vêm do snapshot e não dependem dela.
   Preencher a partir do binding criaria segunda fonte para o mesmo atributo, contra a
   invariante 2, sem ganho de negócio.
+- **16/09** — **Passo 4 feito.** Cinco tabelas do Bridge, 13 FKs compostas e oito índices
+  únicos de apoio. As cinco regras de escopo saíram do TypeScript e são recusadas pelo
+  Postgres: uma suíte de 12 casos (1 caminho feliz + 11 violações) passa inteira, com o banco
+  intacto por `ROLLBACK`. Drift check limpo — `migration:generate` não acha diferença entre
+  metadado e schema.
+
+  **Quatro problemas na DDL, achados ao implementar.** O índice de apoio tinha 3 colunas e a FK
+  que o consome tem 4 (Postgres exige correspondência exata, não subconjunto); faltava
+  `UNIQUE (id, platform_id)` em `platform_account` para o nível ad; `platform_format_mapping`
+  não tinha PK e o TypeORM lançaria `MissingPrimaryColumnError`; e a regra 3 apontava para
+  `channel_buying_type`, que só existia como `@JoinTable` — **FK não referencia junção que só
+  vive em metadado de `@ManyToMany`**. A junção virou entidade explícita com PK composta.
+
+  **Cópias de escopo subiram de 4 para 6**: as unicidades por coordenada externa de ad_group e
+  de ad (D7) exigiram `platform_id` nas duas classificações.
+
+  **Três fatos do TypeORM 0.3 que custaram caro e foram para a skill:** ele nunca gera índice
+  único de apoio para FK composta de `@ManyToOne`; SQL escrito à mão na migration é derrubado
+  pelo `migration:generate` seguinte; e toda coluna de junção precisa de `@Column` explícito
+  nas duas pontas.
+
+  **Estrutura.** `src/bridge/` virou uma pasta por nível de declaração com feature module cada,
+  e `BridgeModule` virou agregador — era o único módulo de camada que também era de feature.
+  `Grouping`/`SubGrouping` foram de Media para Business: descrevem como o cliente fatia a
+  campanha, não como a mídia foi comprada. Rotas HTTP mantidas em `media/` para não quebrar o
+  frontend.
+
+  **Banco recriado do zero**, como a liberdade do projeto permite. Perdidos de propósito: as 17
+  `platform_account` e o cliente Embratur, ambos criados pela UI e não reproduzidos por seed.
+  `platform_object_map` estava em zero, então o passo 5 seguiu sem trabalho.
+
+  **Regra nova no `CLAUDE.md`:** no Bridge, escrever por id escalar e nunca por objeto de
+  relação — seis colunas participam de duas FKs cada, e só a relação declarada primeiro é dona
+  da coluna.
 - **16/09** — **Re-extração completa refeita e conferida.** Clear data no Airbyte com *Include
   Deleted* ligado e `start_date` 2025-01-01; sync às 13:41, medallion às 14:05.
 

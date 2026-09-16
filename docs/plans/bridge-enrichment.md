@@ -10,8 +10,7 @@ Plano único dos três repositórios (`binder_etl`, `binder_app_backend`,
 
 ## Próxima ação
 
-Decidir **D9** (ordem de execução dos passos 4–9) e **D2–D3** (constraints do binding).
-Nenhuma entidade nova no backend antes disso.
+Decidir **D9** (ordem de execução dos passos 4–9). É o último bloqueio do passo 4.
 
 ## Objetivo
 
@@ -31,7 +30,7 @@ classificação. Os motivos estão em "Fora de escopo" de `binder_app_backend/do
 | 1a | Silver descarta ad × dia sem nenhuma métrica | etl | feito 14/09 |
 | 2 | `dedupe_columns` na chave natural mínima, inclusive no fato | etl | feito 14/09 |
 | 3 | Bronze acumula: union com o existente antes do dedupe | etl | feito 14/09 |
-| 4 | Tabelas novas do Bridge, índices de apoio e FKs compostas | backend | pendente — bloqueado por D2, D3, D9 |
+| 4 | Tabelas novas do Bridge, índices de apoio e FKs compostas | backend | pendente — bloqueado por D9 |
 | 5 | Migrar dados de `platform_object_map` para as tabelas novas | backend | pendente |
 | 6 | Tradução de formato + fila de pendências | backend | pendente — bloqueado por D5, D8 |
 | 7 | `enrichment_publication`, snapshot e endpoint | backend | pendente — bloqueado por D4 |
@@ -88,6 +87,23 @@ As telas atuais falam com `PlatformObjectMap`.
   ```
 
   Tem que voltar vazio; cada linha é uma decisão manual de qual cliente fica.
+
+  **Amarração de escopo (D2/D3).** As cinco regras da tabela em `architecture.md` entram
+  juntas, pela mesma técnica: coluna de escopo copiada na linha + FK composta para a origem.
+  São 4 colunas copiadas (`client_id` e `platform_id` no binding, `campaign_id` na
+  classificação e na atribuição) e 7 índices únicos de apoio. Dois pontos de atenção na
+  implementação:
+
+  - O DTO de classificação de ad_group **não expõe `campaignId`**. O backend lê do binding e
+    grava a cópia. Se o operador pudesse digitar, a cópia deixaria de ser cópia.
+  - Trocar `campaign_id` de um binding classificado exige apagar as
+    `platform_ad_group_classification` daquele binding na mesma transação, antes do update —
+    senão a FK `(campaign_id, grouping_id) → grouping` barra a operação. Mesmo padrão do
+    `updateMany` de `platform-account.service.ts`, que já apaga os filhos ao trocar o cliente
+    de uma conta.
+
+  Junto com o passo 4, mover `Grouping`/`SubGrouping` de `src/media/grouping/` para
+  `src/business/grouping/`. Sem mudança de schema — só tira a única FK de Media para Business.
 - **5** — Vai revelar sujeira. Ao transformar `campaign_id` de digitado em derivado, maps de
   ad apontando para campanha diferente da do ad_group vão bater na FK. É o sistema
   funcionando: trate como relatório a resolver, não como falha do script. Enquanto a tela de
@@ -99,7 +115,11 @@ As telas atuais falam com `PlatformObjectMap`.
 - **8** — `'Não informado'` entra aqui: o gold base guarda `NULL` quando falta dimensão, e o
   enriquecido transforma em balde explícito. Estender o teste de conservação para o gold
   enriquecido.
-- **9** — A Catalog API agora oferece objetos deletados e campanhas antigas sem gasto: as
+- **9** — O filtro de campanha da tela de ad groups é **navegação, não dado**: serve para
+  achar os ad groups, e nada dele é gravado na linha. Hoje o `ObjectMatchingPage` grava o
+  filtro do topo em `platform_object_map.campaign_id` — a tela nova não repete isso, porque a
+  campanha passa a ser derivada do binding.
+  A Catalog API agora oferece objetos deletados e campanhas antigas sem gasto: as
   listas de "Disponíveis" precisam mostrar o status do objeto, e as filas de pendências
   precisam ser ordenadas por investimento, senão enterram o que importa. Ad groups e ads
   precisam sair do `ObjectMatchingPage` antes de ganhar feature.
@@ -109,8 +129,6 @@ As telas atuais falam com `PlatformObjectMap`.
 
 | # | Decisão | Contexto | Bloqueia |
 |---|---|---|---|
-| D2 | Como amarrar o eixo à campanha vinculada | A DDL garante que o valor pertence ao eixo, mas não que o eixo (`grouping.campaign_id`) é da campanha do binding. Opções: copiar `campaign_id` na classificação amarrado por FK composta ao binding (cópia que não diverge), ou trigger | 4 |
-| D3 | FK `(channel_id, buying_type_id) → channel_buying_type` e cliente da campanha = cliente da conta | Hoje essas regras só existem em texto; a invariante 4 pede constraint | 4 |
 | D4 | Contrato de status da publicação entre DAG e backend | O DAG precisa marcar `processing`/`materialized`/`failed`; falta endpoint e autenticação do DAG no backend | 7 |
 | D5 | De onde vem o investimento por `ad_format` | A fila de formatos não traduzidos é ordenada por investimento, que está no lake; o backend não lê o MinIO. Candidato: endpoint novo no catalog-api | 6 |
 | D6 | Caminho de serving do card de cobertura | Não existe serving do gold para o frontend. Candidato sem serving: o DAG grava estatísticas de cobertura na própria publicação | 9 |
@@ -186,3 +204,34 @@ Registro datado, só acrescentado. Números medidos moram aqui, não na referên
   `docs/bridge-matching.md` e `docs/domain-model.md`. Deixado de fora de propósito:
   `CampaignMatchingPage` ainda tem a seção "dois ou mais clientes" — vira código morto e
   morre na troca de endpoint do passo 9, junto com o resto da tela.
+- **16/09** — **D2 e D3 fechadas juntas: eram a mesma decisão.** Ao procurar como amarrar o
+  eixo à campanha, apareceram cinco validações imperativas no
+  `platform-object-map.service.ts` com a mesma forma — `assertClientAlignment`,
+  `assertChannelPlatform`, `assertBuyingTypeOnChannel`,
+  `assertFormatSubFormatConsistency` e `loadSubGroupingsForCampaign`. Todas dizem *a
+  classificação escolhida tem que pertencer ao escopo que a identificação de cima
+  estabeleceu*. A D3 era as regras 1–3 dessa lista; a D2, a regra 5.
+
+  **Decidido:** as cinco viram constraint no passo 4, pela técnica única de coluna de escopo
+  copiada + FK composta para a origem. A cópia não diverge porque o banco não deixa. Custo
+  medido: 4 colunas, 7 índices únicos de apoio. Ganho: as cinco validações somem do
+  TypeScript junto com `assertLevelFields`.
+
+  **Decidido:** trocar a campanha de negócio de um binding classificado apaga as
+  classificações de ad_group daquele binding, em cascata na mesma transação. Segue o
+  precedente de trocar o cliente de uma conta.
+
+  Vocabulário novo, que faltava para explicar por que cada nível tem as colunas que tem:
+  **identificação** (a que entidade de negócio o objeto pertence — declarada uma vez, herdada
+  para baixo) × **classificação** (que atributos o objeto tem). O nível de ad_group só tem
+  classificação, porque herda a identificação da campanha. Subiu para o bloco compartilhado
+  dos três `CLAUDE.md`.
+
+  Duas coisas que a discussão revelou e entraram no passo 4 e no passo 9: o DTO de ad_group
+  não pode expor `campaignId` (senão a cópia deixa de ser cópia), e o filtro de campanha da
+  tela nova é navegação e não dado — hoje o `ObjectMatchingPage` grava o filtro do topo na
+  linha, que é a raiz da confusão entre cadastro e atribuição.
+
+  `Grouping`/`SubGrouping` vão de Media para Business: eram a única entidade de Media com FK
+  para Business, e descrevem como o cliente fatia a campanha dele, não como a mídia foi
+  comprada.

@@ -39,6 +39,14 @@ Valem nos três repositórios. Contradizer uma delas é bug, não escolha de imp
 | Território, Persona, … | ad_group | ad | configuração |
 | Format / Sub-format | ad | — | traduzido do nativo |
 
+**Identificação e classificação.** A tabela acima tem dois tipos de linha. *Identificação* diz
+a que entidade de negócio o objeto pertence — conta → cliente, campanha da plataforma →
+campanha de negócio. É declarada uma vez e herdada por toda a hierarquia abaixo; nenhum nível
+abaixo a digita. *Classificação* anexa atributos: channel, buying type, eixos, formato. O
+vocabulário disponível para classificar um nível é limitado pelo escopo que a identificação de
+cima estabeleceu — os eixos de um ad_group são os da campanha de negócio do binding dele, e
+não outros. Por isso o nível de ad_group só classifica: a identificação ele herda.
+
 > Este bloco é espelhado em `binder_app_backend/CLAUDE.md` e `binder_app_frontend/CLAUDE.md`.
 > Ao mudar, mude nos três.
 

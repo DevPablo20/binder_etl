@@ -128,8 +128,14 @@ As telas atuais falam com `PlatformObjectMap`.
   **Migration.** Não há base além do Postgres local em docker: em vez de migration
   incremental, derrubar o banco, regenerar o baseline `default` do zero e rodar os seeds — o
   mesmo caminho usado ao fechar a D1. Uma migration só para revisar, com a cadeia de FKs
-  compostas inteira à vista. Enquanto isso valer, é o caminho preferido; quando existir base
-  com dado, volta a ser migration incremental.
+  compostas inteira à vista.
+
+  Derrubar o banco resolve **schema**, não **dado** — ele destrói o dado, não o migra. Essa
+  liberdade é segura só porque o Bridge está vazio, que é a mesma razão de o passo 5 não ter
+  trabalho. As duas caem juntas: no instante em que `platform_object_map` tiver linhas (um
+  teste na tela de Vinculação basta), recriar o baseline vira perda de dado e o passo 5 volta a
+  existir. Por isso a checagem do passo 5 é para rodar **no momento** do passo 4, não uma
+  conclusão já tirada.
 
   Junto com o passo 4, mover `Grouping`/`SubGrouping` de `src/media/grouping/` para
   `src/business/grouping/`. Sem mudança de schema — só tira a única FK de Media para Business.

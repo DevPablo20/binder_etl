@@ -10,8 +10,8 @@ Plano único dos três repositórios (`binder_etl`, `binder_app_backend`,
 
 ## Próxima ação
 
-Fechar **D7** (chave do join de enriquecimento). É a última decisão que a fatia 1 esbarra
-antes de chegar ao gold. O passo 4 não depende dela e já está desbloqueado.
+Começar o **passo 4** — nenhuma decisão o bloqueia, e a fatia 1 está livre até o gold. D5, D6,
+D8 e D10 só aparecem nas fatias 3 e no card de cobertura.
 
 ## Objetivo
 
@@ -35,7 +35,7 @@ classificação. Os motivos estão em "Fora de escopo" de `binder_app_backend/do
 | 5 | Migrar dados de `platform_object_map` para as tabelas novas | backend | vazio — nada a migrar |
 | 6 | Tradução de formato + fila de pendências | backend | pendente — bloqueado por D5, D8 |
 | 7 | `enrichment_publication`, `enrichment_run`, snapshot e endpoints | backend | pendente — desbloqueado |
-| 8 | Gold enriquecido: fetch, três `LEFT JOIN`, coluna `MAP`, teste de invariante | etl | pendente — bloqueado por D7 |
+| 8 | Gold enriquecido: fetch, três `LEFT JOIN`, coluna `MAP`, teste de invariante | etl | pendente — desbloqueado |
 | 9 | Telas de configuração, alerta de não materializado, card de cobertura | frontend | pendente — card bloqueado por D6 |
 | 10 | Remover `platform_object_map` e `assertLevelFields` | backend | pendente |
 
@@ -153,7 +153,8 @@ As telas atuais falam com `PlatformObjectMap`.
   `processing`. Guard próprio com chave de API em header; nada de usuário de serviço.
 - **8** — `'Não informado'` entra aqui: o gold base guarda `NULL` quando falta dimensão, e o
   enriquecido transforma em balde explícito. Estender o teste de conservação para o gold
-  enriquecido.
+  enriquecido — e testar os **dois lados**: `LEFT` protege contra perder linha, a chave do join
+  protege contra duplicar. Chave e unicidades em `binder_app_backend/docs/architecture.md`.
 - **9** — O filtro de campanha da tela de ad groups é **navegação, não dado**: serve para
   achar os ad groups, e nada dele é gravado na linha. Hoje o `ObjectMatchingPage` grava o
   filtro do topo em `platform_object_map.campaign_id` — a tela nova não repete isso, porque a
@@ -170,7 +171,6 @@ As telas atuais falam com `PlatformObjectMap`.
 |---|---|---|---|
 | D5 | De onde vem o investimento por `ad_format` | A fila de formatos não traduzidos é ordenada por investimento, que está no lake; o backend não lê o MinIO. Candidato: endpoint novo no catalog-api | 6 |
 | D6 | Caminho de serving do card de cobertura | Não existe serving do gold para o frontend. A D4 resolveu metade: cobertura é métrica de **rodada**, não de publicação, e cabe em `enrichment_run` — o DAG grava ao fechar a rodada e o backend serve sem tocar no lake. Falta decidir o resto do serving de relatório | 9 |
-| D7 | Chave do join de enriquecimento: `campaign_id` sozinho ou `(ad_account_id, campaign_id)` | O fato não traz conta (vem de `ads`); IDs do TikTok são únicos globalmente | 8 |
 | D8 | `ad_format` nulo e sub-formato | `native_value` é `NOT NULL`, e posts autorizados vêm com `ad_format` nulo: o ETL emite um valor explícito? `ad_format` não carrega duração: de onde vem o sub-formato (15s, 30s) que `sub_format_id NOT NULL` exige? | 6 |
 | D10 | Recuar o `start_date` do Airbyte antes de 2025 | Traria 85 campanhas sem gasto e o histórico anterior. Decisão de negócio, não de correção | — |
 
@@ -328,3 +328,29 @@ Registro datado, só acrescentado. Números medidos moram aqui, não na referên
   Confusão desfeita no caminho, que vale registrar: a tela de **configuração** nunca depende da
   materialização — ela compara o catálogo do lake contra as tabelas do Bridge, ambos alcançáveis
   pelo backend. Só a tela de **relatório** depende do gold, e essa ainda não existe (D6).
+- **16/09** — **D7 fechada: o join de enriquecimento casa pelo id do objeto, sem a conta.**
+  `campaign_id`, `ad_group_id` e `ad_id` vêm do fato e estão sempre presentes; `ad_account_id`
+  é derivado da dimensão `ads` e pode faltar — e `NULL` não casa com `NULL`. Incluir a conta
+  amarraria a cobertura do enriquecimento à completude de uma dimensão que o `LEFT JOIN` do
+  gold base existe para sobreviver sem.
+
+  **Medido no gold atual** (7.819 linhas, R$ 9.114.522,76): 0 linhas sem `ad_account_id`, 0 sem
+  `campaign_id`, e **0 objetos sob mais de uma conta** nos três níveis — 55 campanhas, 314
+  ad_groups, 558 ads. Nenhuma divergência de hierarquia. Hoje as duas chaves se comportam
+  igual; a decisão é sobre o modo de falha quando o dado deixar de ser perfeito.
+
+  **Preço da chave frouxa, e como foi pago.** Sem a conta na chave, dois candidatos para o
+  mesmo id fariam a linha do fato duplicar — dinheiro dobrado, invariante 5 quebrada para cima.
+  Entram três unicidades por coordenada externa no Bridge:
+  `UNIQUE (platform_id, external_campaign_id | external_ad_group_id | external_ad_id)`. Com
+  elas o fan-out é estruturalmente impossível e o erro aparece na tela ao salvar, não de
+  madrugada no teste de conservação. É a mesma forma da D1: a unicidade tem que morar onde o
+  join enxerga.
+
+  **Custo não previsto:** as unicidades de ad_group e de ad exigiram `platform_id` nas duas
+  classificações. As cópias de escopo passaram de 4 para 6.
+
+  **Conta ausente não é remendada.** `ad_account_id` nulo continua nulo no enriquecido. É coluna
+  técnica de rastreio; cliente e campanha de negócio vêm do snapshot e não dependem dela.
+  Preencher a partir do binding criaria segunda fonte para o mesmo atributo, contra a
+  invariante 2, sem ganho de negócio.

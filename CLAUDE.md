@@ -78,6 +78,11 @@ sumiu. Deletados chegam explicitamente com `*_STATUS_DELETE` em `secondary_statu
   mas vem `NULL` do conector. `ad_account_id` deriva da hierarquia, pela dimensão `ads`.
 - **Todo join do gold é `LEFT`, partindo do fato.** A extração nunca é garantidamente
   completa; o join não pode depender dela.
+- **O join de enriquecimento casa pelo id do objeto, nunca pela conta.** `campaign_id`,
+  `ad_group_id` e `ad_id` vêm do fato e estão sempre presentes; `ad_account_id` é derivado da
+  dimensão `ads` e pode faltar — e `NULL` não casa com `NULL`. O snapshot é filtrado por
+  plataforma antes do join. Quem garante que não há dois candidatos para o mesmo id é a
+  unicidade por coordenada externa no Bridge, não o ETL.
 - **Linha não é dinheiro.** Meça conservação por soma de métrica, não por contagem de linhas.
 - **Mudar `start_date` ou *Include Deleted* no Airbyte exige Clear data dos streams.**
 - A FastAPI de catálogo precisa inicializar o `SparkSession` no lifespan **antes** de aceitar

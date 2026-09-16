@@ -10,7 +10,8 @@ Plano único dos três repositórios (`binder_etl`, `binder_app_backend`,
 
 ## Próxima ação
 
-Decidir **D9** (ordem de execução dos passos 4–9). É o último bloqueio do passo 4.
+Fechar **D7** (chave do join de enriquecimento). É a última decisão que a fatia 1 esbarra
+antes de chegar ao gold. O passo 4 não depende dela e já está desbloqueado.
 
 ## Objetivo
 
@@ -30,16 +31,38 @@ classificação. Os motivos estão em "Fora de escopo" de `binder_app_backend/do
 | 1a | Silver descarta ad × dia sem nenhuma métrica | etl | feito 14/09 |
 | 2 | `dedupe_columns` na chave natural mínima, inclusive no fato | etl | feito 14/09 |
 | 3 | Bronze acumula: union com o existente antes do dedupe | etl | feito 14/09 |
-| 4 | Tabelas novas do Bridge, índices de apoio e FKs compostas | backend | pendente — bloqueado por D9 |
-| 5 | Migrar dados de `platform_object_map` para as tabelas novas | backend | pendente |
+| 4 | Tabelas novas do Bridge, índices de apoio e FKs compostas | backend | pendente — desbloqueado |
+| 5 | Migrar dados de `platform_object_map` para as tabelas novas | backend | vazio — nada a migrar |
 | 6 | Tradução de formato + fila de pendências | backend | pendente — bloqueado por D5, D8 |
-| 7 | `enrichment_publication`, snapshot e endpoint | backend | pendente — bloqueado por D4 |
+| 7 | `enrichment_publication`, `enrichment_run`, snapshot e endpoints | backend | pendente — desbloqueado |
 | 8 | Gold enriquecido: fetch, três `LEFT JOIN`, coluna `MAP`, teste de invariante | etl | pendente — bloqueado por D7 |
 | 9 | Telas de configuração, alerta de não materializado, card de cobertura | frontend | pendente — card bloqueado por D6 |
 | 10 | Remover `platform_object_map` e `assertLevelFields` | backend | pendente |
 
 Nas conversas e commits de 14/09, "Fase 1 / Etapas 1–4" corresponde aos passos 2, 1a, 1 e 3,
 nessa ordem. Daqui em diante, só a numeração desta tabela.
+
+## Ordem de execução
+
+Passo 4 inteiro primeiro, depois três fatias verticais. O passo 4 **não** se fatia: a cadeia de
+FKs compostas foi desenhada como um todo, e quebrá-la em três migrations multiplica a chance de
+o TypeORM errar uma chave composta — o ponto mais frágil do passo.
+
+| Fatia | Nível | Entrega | Passos |
+|---|---|---|---|
+| **1** | campanha | gasto por campanha de negócio, channel e buying type no gold enriquecido | 7, 8, 9 |
+| **2** | ad_group | eixos (Território, Persona) propagando até ad × dia | 8, 9 |
+| **3** | formato | formato e sub-formato traduzidos do nativo | 6, 8, 9 |
+
+A fatia 1 atravessa o trecho mais incerto da iniciativa — publicação → fetch do DAG → join no
+Spark → teste de conservação — com a carga mais simples possível. É ela que prova o mecanismo,
+e é apresentável sozinha.
+
+As cinco regras de escopo acompanham o corte: regras 1, 2 e 3 são do binding (fatia 1), a regra
+5 é do eixo (fatia 2), a regra 4 é do formato (fatia 3).
+
+O gold enriquecido é tocado três vezes, ganhando um `LEFT JOIN` por fatia. O teste de
+conservação roda em cada uma — delta menor para depurar quando não fechar.
 
 ## Estado atual × alvo
 
@@ -102,16 +125,32 @@ As telas atuais falam com `PlatformObjectMap`.
     `updateMany` de `platform-account.service.ts`, que já apaga os filhos ao trocar o cliente
     de uma conta.
 
+  **Migration.** Não há base além do Postgres local em docker: em vez de migration
+  incremental, derrubar o banco, regenerar o baseline `default` do zero e rodar os seeds — o
+  mesmo caminho usado ao fechar a D1. Uma migration só para revisar, com a cadeia de FKs
+  compostas inteira à vista. Enquanto isso valer, é o caminho preferido; quando existir base
+  com dado, volta a ser migration incremental.
+
   Junto com o passo 4, mover `Grouping`/`SubGrouping` de `src/media/grouping/` para
   `src/business/grouping/`. Sem mudança de schema — só tira a única FK de Media para Business.
-- **5** — Vai revelar sujeira. Ao transformar `campaign_id` de digitado em derivado, maps de
-  ad apontando para campanha diferente da do ad_group vão bater na FK. É o sistema
-  funcionando: trate como relatório a resolver, não como falha do script. Enquanto a tela de
-  campanhas não trocar de endpoint (passo 9), a UI continua gravando em `platform_object_map`
-  — migrar e trocar a tela de cada nível juntos evita a dupla escrita.
+- **5** — **Não há o que migrar.** `platform_object_map` está vazio, ninguém classificou nada
+  ainda e não existe instância além do Postgres local. O passo deixa de ser script de migração
+  e vira uma checagem antes do passo 4:
+
+  ```sql
+  SELECT count(*) FROM platform_object_map;
+  ```
+
+  Voltando zero, os dois custos que o passo carregava desaparecem: não há relatório de sujeira
+  a resolver nem janela de dupla escrita. Se um dia vier diferente de zero, o raciocínio
+  antigo volta a valer — ao transformar `campaign_id` de digitado em derivado, maps de ad
+  apontando para campanha diferente da do ad_group batem na FK, e isso é relatório a resolver,
+  não falha do script.
 - **6** — Ver D5 e D8 antes de desenhar a fila.
-- **7** — Transporte por HTTP (`GET /enrichment/publications/pending`), simétrico ao
-  catalog-api. As transições de status dependem de D4.
+- **7** — Desenho fechado na D4, em `binder_app_backend/docs/architecture.md`: duas tabelas
+  (`enrichment_publication` e `enrichment_run`), snapshot em tabelas próprias com valores
+  resolvidos, e duas chamadas HTTP do DAG — leitura no começo, resultado no fim. Sem
+  `processing`. Guard próprio com chave de API em header; nada de usuário de serviço.
 - **8** — `'Não informado'` entra aqui: o gold base guarda `NULL` quando falta dimensão, e o
   enriquecido transforma em balde explícito. Estender o teste de conservação para o gold
   enriquecido.
@@ -129,12 +168,10 @@ As telas atuais falam com `PlatformObjectMap`.
 
 | # | Decisão | Contexto | Bloqueia |
 |---|---|---|---|
-| D4 | Contrato de status da publicação entre DAG e backend | O DAG precisa marcar `processing`/`materialized`/`failed`; falta endpoint e autenticação do DAG no backend | 7 |
 | D5 | De onde vem o investimento por `ad_format` | A fila de formatos não traduzidos é ordenada por investimento, que está no lake; o backend não lê o MinIO. Candidato: endpoint novo no catalog-api | 6 |
-| D6 | Caminho de serving do card de cobertura | Não existe serving do gold para o frontend. Candidato sem serving: o DAG grava estatísticas de cobertura na própria publicação | 9 |
+| D6 | Caminho de serving do card de cobertura | Não existe serving do gold para o frontend. A D4 resolveu metade: cobertura é métrica de **rodada**, não de publicação, e cabe em `enrichment_run` — o DAG grava ao fechar a rodada e o backend serve sem tocar no lake. Falta decidir o resto do serving de relatório | 9 |
 | D7 | Chave do join de enriquecimento: `campaign_id` sozinho ou `(ad_account_id, campaign_id)` | O fato não traz conta (vem de `ads`); IDs do TikTok são únicos globalmente | 8 |
 | D8 | `ad_format` nulo e sub-formato | `native_value` é `NOT NULL`, e posts autorizados vêm com `ad_format` nulo: o ETL emite um valor explícito? `ad_format` não carrega duração: de onde vem o sub-formato (15s, 30s) que `sub_format_id NOT NULL` exige? | 6 |
-| D9 | Ordem dos passos 4–9 | Linear como na tabela, ou em fatias verticais: nível campanha de ponta a ponta (4→5→7→8→9, só binding), depois ad_group com eixos, depois formato. Fatias expõem integração cedo e evitam a dupla escrita do passo 5 | 4 |
 | D10 | Recuar o `start_date` do Airbyte antes de 2025 | Traria 85 campanhas sem gasto e o histórico anterior. Decisão de negócio, não de correção | — |
 
 ## Diário
@@ -235,3 +272,59 @@ Registro datado, só acrescentado. Números medidos moram aqui, não na referên
   `Grouping`/`SubGrouping` vão de Media para Business: eram a única entidade de Media com FK
   para Business, e descrevem como o cliente fatia a campanha dele, não como a mídia foi
   comprada.
+- **16/09** — **D9 fechada: passo 4 inteiro, depois três fatias verticais.** O passo 4 não se
+  fatia porque a cadeia de FKs compostas foi desenhada como um todo — três migrations
+  triplicariam a chance de errar uma chave composta. De 5 a 9, o corte é por nível: campanha,
+  ad_group, formato. A fatia 1 existe para atravessar cedo o trecho mais incerto (publicação →
+  fetch do DAG → join no Spark → conservação) com a carga mais simples possível.
+
+  **Descoberto ao decidir: o passo 5 não tem trabalho.** `platform_object_map` está com zero
+  linhas, ninguém classificou nada e não há instância além do Postgres local em docker. Some o
+  script de migração, some o relatório de sujeira e some a janela de dupla escrita — que era o
+  argumento principal a favor de fatiar. Fatiar continua valendo, agora só pelo feedback de
+  integração.
+
+  **Enquanto não houver base com dado**, mudança de schema é derrubar o banco e regenerar o
+  baseline `default`, não migration incremental. Vale para o passo 4.
+
+  D4 e D7 ficam para fechar no papel, antes da fatia 1 chegar ao gold.
+- **16/09** — **D4 fechada.** O desenho completo está em
+  `binder_app_backend/docs/architecture.md`; aqui fica o que a discussão revelou.
+
+  **Os dois relógios.** O gold enriquecido é produto do fato (muda todo dia) e da configuração
+  (muda quando alguém publica). Por isso ele é reconstruído a cada rodada diária, mesmo sem
+  publicação nova. Consequência: uma publicação é criada uma vez e usada em **muitas rodadas**.
+
+  **Erro de modelagem corrigido.** `status` estava na publicação, espremendo N rodadas num
+  campo: a linha era reescrita todo dia, uma publicação materializada voltava a `failed` por
+  erro transitório de Spark, e não dava para distinguir "falhou uma vez" de "falha há 30 dias".
+  Falha passou para `enrichment_run`, tabela nova. A publicação ficou com
+  `pending | materialized | superseded`.
+
+  **`processing` foi removido.** A operação é idempotente e o Airflow roda uma instância por
+  vez — não há corrida a proteger, e some o risco de publicação presa se o DAG morrer no meio.
+
+  **Sem limite de tentativas.** O receio de "loop infinito" não se aplica: é uma tentativa por
+  dia, e a reconstrução diária aconteceria de qualquer forma por causa do fato novo. Travar
+  depois de N falhas congelaria o gold também em relação ao fato. O remédio é visibilidade —
+  contar falhas consecutivas em `enrichment_run`.
+
+  **Snapshot em tabelas próprias, com valores resolvidos.** Guardar `sub_grouping_id` não
+  congela nada: renomear o valor no dia seguinte mudaria o resultado de uma publicação
+  supostamente imutável. Resolver no momento da publicação é o que torna a rodada reprodutível.
+
+  **Autenticação por chave de API em header, com guard próprio.** O `AuthGuard` global busca um
+  usuário real no banco e monta `UserSignature` com role e empresas — molde de pessoa, não de
+  robô. Regra nova no `CLAUDE.md` do backend.
+
+  **Sem publicação, o gold enriquecido é construído vazio.** Snapshot vazio é snapshot com zero
+  linhas; os `LEFT JOIN` dão `NULL` e viram `'Não informado'`. Menos código que pular, e o
+  resultado é passa-through puro — mesma soma e mesma contagem do gold base, o canário mais
+  sensível a fan-out que existe.
+
+  **D6 ficou meio resolvida:** cobertura é métrica de rodada, não de publicação, e cabe em
+  `enrichment_run`.
+
+  Confusão desfeita no caminho, que vale registrar: a tela de **configuração** nunca depende da
+  materialização — ela compara o catálogo do lake contra as tabelas do Bridge, ambos alcançáveis
+  pelo backend. Só a tela de **relatório** depende do gold, e essa ainda não existe (D6).

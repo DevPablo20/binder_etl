@@ -354,3 +354,32 @@ Registro datado, só acrescentado. Números medidos moram aqui, não na referên
   técnica de rastreio; cliente e campanha de negócio vêm do snapshot e não dependem dela.
   Preencher a partir do binding criaria segunda fonte para o mesmo atributo, contra a
   invariante 2, sem ganho de negócio.
+- **16/09** — **Re-extração completa refeita e conferida.** Clear data no Airbyte com *Include
+  Deleted* ligado e `start_date` 2025-01-01; sync às 13:41, medallion às 14:05.
+
+  | | Silver (fato) | Gold |
+  |---|---|---|
+  | Linhas | 7.819 | 7.819 |
+  | Spend | R$ 9.114.522,76 | R$ 9.114.522,76 |
+
+  Dimensões: 17 advertisers, 70 campanhas, 352 ad_groups, 677 ads. **Campanhas do fato sem
+  entrada na dimensão: 0**, e nenhuma linha de gold sem `campaign_name`. O diagnóstico de 11/09
+  está zerado, e a conservação silver × gold fecha.
+
+  Antes desta rodada as **dimensões** estavam degradadas por sync incremental — `campaigns`
+  casava com 14 das 70. O fato não foi afetado: 7.819 linhas e R$ 9.114.522,76 antes e depois,
+  porque o bronze acumula desde o passo 3. Quem absorveu a degradação foi o `LEFT JOIN` do passo
+  1; o dinheiro nunca esteve errado, faltava o vocabulário nativo para descrevê-lo. Registro do
+  padrão, que deve se repetir: **limpar o raw não reseta o cursor do Airbyte** — depois de mexer
+  na configuração, só o Clear data traz tudo de volta.
+
+  `ad_format` medido de novo, insumo da D8:
+
+  | Valor | Ads | Spend |
+  |---|---|---|
+  | `SINGLE_VIDEO` | 491 | R$ 8.030.543,33 |
+  | `CAROUSEL_ADS` | 60 | R$ 958.848,26 |
+  | nulo | 7 | R$ 125.131,17 |
+
+  Continuam três valores. O nulo segue material (1,37% do spend), então a D8 precisa mesmo
+  decidir que valor explícito o ETL emite para ele.

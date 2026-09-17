@@ -10,9 +10,14 @@ Plano único dos três repositórios (`binder_etl`, `binder_app_backend`,
 
 ## Próxima ação
 
-Passo 7 da fatia 1 — `enrichment_publication`, `enrichment_run`, snapshot e os dois endpoints
-do DAG. Desenho fechado na D4, em `binder_app_backend/docs/architecture.md`. Antes disso,
-revincular as 17 contas e recriar o cliente Embratur pela UI (o banco foi recriado no passo 4).
+Passo 8 da fatia 1 — gold enriquecido no ETL: o DAG abre a rodada em
+`POST /enrichment/dag/runs`, lê o snapshot de campanha, faz o `LEFT JOIN` e fecha a rodada em
+`PATCH /enrichment/dag/runs/:id`. O teste de conservação roda aqui, e o caso mais sensível já
+está disponível: sem publicação alguma o snapshot vem vazio, e o enriquecido tem que sair
+idêntico ao gold base, na soma **e** na contagem de linhas.
+
+A chave de API vive em `ENRICHMENT_API_KEY` no `.env.development` do backend, e precisa chegar
+ao Airflow.
 
 ## Objetivo
 
@@ -35,9 +40,10 @@ classificação. Os motivos estão em "Fora de escopo" de `binder_app_backend/do
 | 4 | Tabelas novas do Bridge, índices de apoio e FKs compostas | backend | feito 16/09 |
 | 5 | Migrar dados de `platform_object_map` para as tabelas novas | backend | vazio — nada a migrar |
 | 6 | Tradução de formato + fila de pendências | backend | pendente — bloqueado por D5, D8 |
-| 7 | `enrichment_publication`, `enrichment_run`, snapshot e endpoints | backend | pendente — desbloqueado |
+| 7 | `enrichment_publication`, `enrichment_run`, snapshot e endpoints | backend | feito 17/09 |
 | 8 | Gold enriquecido: fetch, três `LEFT JOIN`, coluna `MAP`, teste de invariante | etl | pendente — desbloqueado |
 | 9 | Telas de configuração, alerta de não materializado, card de cobertura | frontend | pendente — card bloqueado por D6 |
+|   | *O CRUD do binding saiu daqui e foi para o passo 7: é backend, e sem ele a publicação só sabia congelar tabela vazia.* | | |
 | 10 | Remover `platform_object_map` e `assertLevelFields` | backend | pendente |
 
 Nas conversas e commits de 14/09, "Fase 1 / Etapas 1–4" corresponde aos passos 2, 1a, 1 e 3,
@@ -81,7 +87,8 @@ conservação roda em cada uma — delta menor para depurar quando não fechar.
 | Bridge | `PlatformObjectMap` — tabela larga com `object_type` e validação em `assertLevelFields` | 4 tabelas, uma por nível, com as regras em constraint |
 | Campanha de negócio | coluna `campaign_id` digitada em todo nível | derivada por FK composta a partir do binding |
 | Formato | classificação manual por ad | traduzido de `ad_format` nativo; manual só como exceção |
-| Publicação | não existe | snapshot imutável consumido pelo DAG |
+| Publicação | `enrichment_publication`, `enrichment_run`, `enrichment_snapshot_campaign` e as duas rotas do DAG | — (pronto no nível campanha; ad_group e ad ganham snapshot nas fatias 2 e 3) |
+| Vínculo de campanha | `PUT /bridge/campaign-bindings`, upsert em lote pela chave natural | — (pronto) |
 
 ### binder_app_frontend
 
@@ -90,7 +97,7 @@ As telas atuais falam com `PlatformObjectMap`.
 | Fluxo | Hoje | Alvo |
 |---|---|---|
 | Contas | mapeia conta → cliente | sem mudança |
-| Campanhas | `PlatformObjectMap` `campaign` + channel + buying type | `platform_campaign_binding` — mesma UX, endpoint novo |
+| Campanhas | `PlatformObjectMap` `campaign` + channel + buying type | `PUT /bridge/campaign-bindings` — contrato novo, tela **reescrita** sobre ele: upsert em lote, sem `externalName`, sem `isActive` |
 | Ad groups | `ObjectMatchingPage` legado, alvos nos filtros do topo | tela própria no fluxo de diálogo, um seletor **single-select por eixo** |
 | Ads | classificar formato ad a ad (adiado, sem UI) | manter as traduções da plataforma, mais exceção pontual |
 | Publicação | não existe | alerta de alterações não materializadas + botão Publicar |
@@ -154,15 +161,20 @@ As telas atuais falam com `PlatformObjectMap`.
   apontando para campanha diferente da do ad_group batem na FK, e isso é relatório a resolver,
   não falha do script.
 - **6** — Ver D5 e D8 antes de desenhar a fila.
-- **7** — Desenho fechado na D4, em `binder_app_backend/docs/architecture.md`: duas tabelas
-  (`enrichment_publication` e `enrichment_run`), snapshot em tabelas próprias com valores
-  resolvidos, e duas chamadas HTTP do DAG — leitura no começo, resultado no fim. Sem
-  `processing`. Guard próprio com chave de API em header; nada de usuário de serviço.
+- **7** — Feito. Desenho da D4 em `binder_app_backend/docs/architecture.md`, com os dois ajustes
+  que a implementação exigiu (rodada sem publicação, status `running`).
 - **8** — `'Não informado'` entra aqui: o gold base guarda `NULL` quando falta dimensão, e o
   enriquecido transforma em balde explícito. Estender o teste de conservação para o gold
   enriquecido — e testar os **dois lados**: `LEFT` protege contra perder linha, a chave do join
   protege contra duplicar. Chave e unicidades em `binder_app_backend/docs/architecture.md`.
-- **9** — O filtro de campanha da tela de ad groups é **navegação, não dado**: serve para
+- **9** — A tela de Campanhas é **reescrita** sobre o contrato novo, não adaptada: o `PUT` é
+  upsert em lote pela chave natural, não tem `externalName` (nome vive no catálogo, não no
+  Bridge), não tem `isActive` (desvincular é apagar) e devolve `adGroupClassificationsRemoved`,
+  que a tela precisa mostrar — é trabalho de operador sendo destruído. É também aqui que o
+  `CatalogService` troca a fonte do `isMapped` de campanha, de `PlatformObjectMap` para
+  `platform_campaign_binding`: as duas coisas mudam juntas, senão a tela legada fica cega.
+
+  O filtro de campanha da tela de ad groups é **navegação, não dado**: serve para
   achar os ad groups, e nada dele é gravado na linha. Hoje o `ObjectMatchingPage` grava o
   filtro do topo em `platform_object_map.campaign_id` — a tela nova não repete isso, porque a
   campanha passa a ser derivada do binding.
@@ -424,3 +436,72 @@ Registro datado, só acrescentado. Números medidos moram aqui, não na referên
 
   Continuam três valores. O nulo segue material (1,37% do spend), então a D8 precisa mesmo
   decidir que valor explícito o ETL emite para ele.
+
+- **17/09** — **Passo 7 feito: publicação, rodada e snapshot.** Três tabelas em `src/enrichment/`,
+  camada irmã do Bridge, mais o CRUD do binding, que veio do passo 9 porque sem ele publicar só
+  sabia congelar tabela vazia. 20 casos HTTP e 6 casos SQL passam inteiros.
+
+  **O CRUD do binding não copiou o legado.** A operação real da tela é uma só — "nesta conta,
+  estas campanhas passam a ser esta campanha de negócio, com este channel e este buying type" —
+  e isso é upsert em lote pela chave natural `(platformAccountId, externalCampaignId)`, que é a
+  `UNIQUE` criada no passo 4. Três rotas no lugar das seis do `PlatformObjectMap`: `POST` +
+  `POST /bulk` + `PATCH` viram um `PUT` idempotente, e caíram `externalName` (nome é editável na
+  plataforma, quem tem o corrente é o catálogo), `isActive` (desvincular é apagar) e
+  `subGroupingIds` (eixo é do nível ad_group). A tela do passo 9 é reescrita sobre esse contrato.
+
+  **Dois furos na D4, achados ao planejar.** `enrichment_run.publication_id` era `NOT NULL`, mas
+  a própria D4 exige que a rodada aconteça sem publicação alguma — virou nullable, e a primeira
+  rodada de um banco novo registra honestamente que não havia configuração. E `superseded` era
+  "a anterior": agora é **a pendente que nenhuma rodada usou**. Publicação com rodada é história;
+  se a rodada dela fecha com `success`, ela vira `materialized` mesmo que uma publicação mais
+  nova já tenha chegado. Quem rodou, rodou. Ganhou também o status `running`, porque rodada
+  aberta precisa de representação — o "não existe `processing`" da D4 é sobre a *publicação*.
+
+  **A tradução da constraint virou regra.** As regras de escopo são FK composta desde o passo 4,
+  então a violação chega como erro do Postgres e, sem tradução, vira 500 — a regra fica invisível
+  para quem opera. `asConstraintViolation` (`binder_app_backend/src/shared/db-error.util.ts`) casa pelas **colunas**
+  lidas do `detail`, não pelo nome da constraint: o TypeORM gera nome com hash, que muda a cada
+  mexida na entidade. Verificado pela API: regra 1 e regra 3 voltam 409 com o texto da regra, e
+  a mesma campanha em duas contas volta "já vinculada em outra conta desta plataforma".
+
+  **`pending-changes` conta duas coisas separadas:** vínculos alterados e renomeações no
+  vocabulário referenciado por algum vínculo. Como o snapshot congela o nome, renomear um cliente
+  deixa o gold com nome velho sem mexer em vínculo nenhum — sem a segunda contagem, ninguém
+  ficaria sabendo. O teste prova os dois lados: depois de renomear "Caixa", `changedVocabulary`
+  vai a 1 com `changedBindings` em 0, e a rodada seguinte ainda recebe o nome **antigo**, que é o
+  comportamento correto de um snapshot congelado.
+
+  **Baseline recriado de novo** (o Bridge seguia vazio, então a liberdade continuava valendo).
+  Drift check limpo, um arquivo de migration só. As 17 contas e o Embratur voltaram por dump
+  remapeado — `client_id`, `platform_id` e `company_id` mudam a cada seed, então restaurar
+  `--data-only` direto não funciona: tem que remapear para os ids novos.
+
+- **17/09** — **Auditoria de nomenclatura entidade × banco × documentação.** Motivada por uma
+  propriedade que eu batizei de `publishedById` sobre a coluna `published_by`: quem lia a
+  entidade ia procurar `published_by_id` no banco e não achava. Coluna renomeada para
+  `published_by_id`, e a regra subiu para o `CLAUDE.md` e para a skill `create-entities` —
+  `snake_case(propriedade) == name`, sempre. **DDL escrita em documento de decisão não manda na
+  nomenclatura:** a convenção do código vence, e o documento é que se corrige. Foi seguir a DDL
+  da D4 ao pé da letra que gerou o caso.
+
+  Varredura das 24 entidades contra as 183 colunas do `information_schema`: **zero** propriedades
+  divergentes depois do rename. A cobertura se prova pelo inverso — toda coluna do banco é
+  nomeada por alguma entidade, fora as duas junções `@JoinTable`.
+
+  `client`, `invite` e `user_company` tinham o problema oposto: coluna de FK que só existia dentro
+  do `@JoinColumn`, sem propriedade escalar. Ao declarar as quatro, apareceu uma divergência
+  antiga — elas estavam **nullable** no banco (default do TypeORM para `@ManyToOne`) enquanto o
+  TypeScript já as declarava obrigatórias. Zero NULLs nos dados, então o `NOT NULL` entrou no
+  baseline. `platform_object_map` ficou de fora de propósito: sai no passo 10.
+
+  **Na documentação, o pior achado não era nome de coluna.** A seção `PlatformAccount` do
+  `domain-model.md` ainda afirmava, em três lugares, que uma conta pode servir **mais de um
+  cliente** — contradizendo a D1 três linhas acima da própria constraint que a implementa. Quem
+  lesse aquilo desenharia para um caso que o banco recusa. Também saíram seis caminhos de arquivo
+  quebrados (o `Grouping` que mudou de Media para Business, a `PlatformAccount` que ganhou pasta)
+  e sete campos citados com nome que a entidade não tem — `status` onde o código diz `isActive`,
+  `buyingTypes` onde é `channelBuyingTypes`, `platformAccount` numa entidade que de propósito não
+  tem essa relação.
+
+  O `domain-model.md` segue bilíngue: Access, Business e parte de Media em inglês, Bridge e
+  Enrichment em português. Foi exatamente na parte não reescrita que o erro da D1 sobreviveu.

@@ -5,12 +5,9 @@ from pyspark.sql.functions import (
     coalesce,
     col,
     concat_ws,
-    expr,
-    from_utc_timestamp,
     input_file_name,
     lit,
     regexp_extract,
-    to_date,
 )
 from pyspark.sql.utils import AnalysisException
 
@@ -21,10 +18,9 @@ from src.transformers.base import BaseTransformer
 from src.transformers.facebook_organic.tables import (
     FACEBOOK_STREAMS,
     PLATFORM,
-    SNAPSHOT_CUTOFF_HOURS,
-    SNAPSHOT_TIMEZONE,
     FacebookStream,
 )
+from src.transformers.snapshots import snapshot_date
 
 logger = logging.getLogger(__name__)
 
@@ -158,13 +154,3 @@ class FacebookOrganicBronzeTransformer(BaseTransformer):
 def page_id_from_path() -> Column:
     """O raw fica em `airbyte/facebook_organic/{page_id}/{stream}/`."""
     return regexp_extract(input_file_name(), rf"{PLATFORM}/([^/]+)/", 1)
-
-
-def snapshot_date(extracted_at: Column) -> Column:
-    """O dia que a foto fecha, no horário de São Paulo.
-
-    O sync da 01:00 fecha o dia anterior; um sync manual à tarde cai no próprio dia e é
-    substituído pelo da madrugada seguinte. Supõe a sessão Spark em UTC (`spark_session.py`).
-    """
-    local = from_utc_timestamp(extracted_at, SNAPSHOT_TIMEZONE)
-    return to_date(local - expr(f"INTERVAL {SNAPSHOT_CUTOFF_HOURS} HOURS"))

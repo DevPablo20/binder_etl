@@ -20,11 +20,6 @@ from pyspark.sql.types import (
 RAW_PREFIX = "airbyte/facebook_organic"
 PLATFORM = "facebook_organic"
 
-# Fuso do "dia que a foto fecha". Um sync antes das 06:00 fecha o dia anterior; o cron do
-# Airbyte roda à 01:00.
-SNAPSHOT_TIMEZONE = "America/Sao_Paulo"
-SNAPSHOT_CUTOFF_HOURS = 6
-
 # O `end_time` dos insights de período `day` é a meia-noite do Pacífico que *encerra* o dia
 # medido — confirmado contra o Business Suite.
 INSIGHTS_TIMEZONE = "America/Los_Angeles"

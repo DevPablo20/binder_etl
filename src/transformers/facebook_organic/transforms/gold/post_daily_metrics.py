@@ -1,18 +1,8 @@
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import (
-    coalesce,
-    col,
-    datediff,
-    expr,
-    lag,
-    lit,
-    round as round_,
-    unix_timestamp,
-    when,
-)
-from pyspark.sql.window import Window
+from pyspark.sql.functions import coalesce, col, lit, when
 
 from src.transformers.facebook_organic.tables import REACTION_TYPES, GoldFactConfig
+from src.transformers.snapshots import add_lifetime_deltas
 
 # Métricas aditivas: cada uma sai com `{m}_lifetime` (o total acumulado na foto) e
 # `{m}_delta` (a variação desde a foto anterior do mesmo post).
@@ -80,40 +70,7 @@ def transform(sources: dict[str, DataFrame], _fact: GoldFactConfig) -> DataFrame
         .join(pages, "page_id", "left")
     )
 
-    window = Window.partitionBy("post_id").orderBy("snapshot_date")
-    prev_snapshot_at = lag("snapshot_at").over(window)
-
-    df = (
-        df.withColumn("prev_snapshot_date", lag("snapshot_date").over(window))
-        .withColumn("gap_days", datediff(col("snapshot_date"), col("prev_snapshot_date")))
-        .withColumn(
-            "hours_since_prev",
-            round_(
-                (unix_timestamp(col("snapshot_at")) - unix_timestamp(prev_snapshot_at))
-                / 3600,
-                2,
-            ),
-        )
-        .withColumn(
-            "baseline_kind",
-            when(col("prev_snapshot_date").isNotNull(), lit(None).cast("string"))
-            .when(
-                col("created_at") >= col("snapshot_at") - expr("INTERVAL 1 DAY"),
-                lit("new_post"),
-            )
-            .otherwise(lit("pre_existing")),
-        )
-        .withColumn("days_since_publish", datediff(col("snapshot_date"), col("created_date")))
-    )
-
-    for metric in ADDITIVE_METRICS:
-        lifetime = col(f"{metric}_lifetime")
-        df = df.withColumn(
-            f"{metric}_delta",
-            when(col("baseline_kind") == "new_post", lifetime)
-            .when(col("baseline_kind") == "pre_existing", lit(None).cast("long"))
-            .otherwise(lifetime - lag(lifetime).over(window)),
-        )
+    df = add_lifetime_deltas(df, "post_id", ADDITIVE_METRICS)
 
     return df.select(
         col("page_id"),

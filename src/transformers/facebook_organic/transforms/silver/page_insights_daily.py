@@ -12,8 +12,7 @@ from pyspark.sql.functions import (
 from pyspark.sql.types import LongType, MapType, StringType
 
 from src.transformers.facebook_organic.tables import INSIGHTS_TIMEZONE
-
-from ._common import latest_per
+from src.transformers.snapshots import latest_per
 
 COUNT_MAP = MapType(StringType(), LongType())
 

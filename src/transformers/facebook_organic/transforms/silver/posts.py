@@ -2,17 +2,13 @@ from pyspark.sql import DataFrame
 from pyspark.sql.functions import (
     coalesce,
     col,
-    from_utc_timestamp,
     get_json_object,
     lit,
     max as max_,
-    to_date,
     when,
 )
 
-from src.transformers.facebook_organic.tables import SNAPSHOT_TIMEZONE
-
-from ._common import latest_per
+from src.transformers.snapshots import latest_per, local_date
 
 
 def transform(sources: dict[str, DataFrame]) -> DataFrame:
@@ -37,9 +33,7 @@ def transform(sources: dict[str, DataFrame]) -> DataFrame:
         col("id").cast("string").alias("post_id"),
         col("page_id").cast("string").alias("page_id"),
         col("created_time").alias("created_at"),
-        to_date(from_utc_timestamp(col("created_time"), SNAPSHOT_TIMEZONE)).alias(
-            "created_date"
-        ),
+        local_date(col("created_time")).alias("created_date"),
         col("message"),
         col("permalink_url"),
         col("status_type"),

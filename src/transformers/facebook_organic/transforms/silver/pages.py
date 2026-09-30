@@ -1,7 +1,7 @@
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col
 
-from ._common import latest_per
+from src.transformers.snapshots import latest_per
 
 
 def transform(sources: dict[str, DataFrame]) -> DataFrame:

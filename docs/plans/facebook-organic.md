@@ -9,10 +9,8 @@ Iniciativa só do `binder_etl`. Nada aqui toca o backend nem o Bridge.
 
 ## Próxima ação
 
-Validar a extração refeita com a seleção de campos nova (seção [Extração](#extração-airbyte)):
-schema de cada stream, `id` presente no `page_insights`, `is_published`, `attachments`,
-`shares`, `fan_count` e `followers_count` chegando. O resultado fecha os schemas explícitos do
-passo 2.
+Passo 1 — `tables.py` com os schemas explícitos das quatro streams, a partir dos schemas do
+sync 38 (30/09). Desmarcar `attachments` no Airbyte antes (ver [Extração](#extração-airbyte)).
 
 ## Objetivo
 
@@ -38,7 +36,7 @@ só entrega como total acumulado.
 
 | # | Passo | Status |
 |---|---|---|
-| 0 | Extração, seleção de campos e diagnóstico com o Business Suite | feito 30/09 — falta validar a extração refeita |
+| 0 | Extração, seleção de campos e diagnóstico com o Business Suite | feito 30/09 |
 | 1 | `tables.py`: streams, schemas explícitos, chaves, métricas | pendente |
 | 2 | Bronze: foto diária de todas as streams | pendente |
 | 3 | Silver: dimensões, séries e página diária | pendente |
@@ -62,7 +60,7 @@ Seleção de campos:
 | Stream | Selecionados | Observação |
 |---|---|---|
 | `page` | `id`, `name`, `username`, `link`, `category`, `fan_count`, `followers_count` | **Nunca** `page_token`. Nenhuma conexão (`feed`, `posts`, `photos`…) |
-| `post` | `id`, `from`, `created_time`, `message`, `permalink_url`, `status_type`, `is_published`, `is_hidden`, `is_expired`, `attachments`, `shares`, `full_picture` | `type`, `name`, `description`, `caption`, `link`, `picture` são obsoletos. `insights` duplica o stream |
+| `post` | `id`, `from`, `created_time`, `message`, `permalink_url`, `status_type`, `is_published`, `is_hidden`, `is_expired`, `shares`, `full_picture` | `type`, `name`, `description`, `caption`, `link`, `picture` são obsoletos. `insights` duplica o stream. `attachments` chega sempre `{}`: o schema do conector é um objeto e a API devolve `{"data": [...]}`, então o Airbyte descarta o conteúdo sem registrar em `_airbyte_meta.changes` — desmarcar |
 | `post_insights` | `id`, `name`, `period`, `values` | `id` = `{post_id}/insights/{metric}/{period}` |
 | `page_insights` | `id`, `name`, `period`, `values` | `id` = `{page_id}/insights/{metric}/{period}` — não estava selecionado na primeira extração |
 
@@ -112,7 +110,7 @@ linhas por dia por página.
 |---|---|---|
 | `pages` | página | Última foto: `page_id`, `page_name`, `username`, `link`, `category` |
 | `page_followers_snapshot` | página × `snapshot_date` | `fan_count`, `followers_count` |
-| `posts` | post | Última foto, filtrada por `from.id = page_id AND is_published`. `created_at` (UTC), `created_date` (São Paulo), `message`, `permalink_url`, `status_type`, `media_type` (de `attachments`), `is_hidden`, `is_expired`, `full_picture`, `last_seen_date` |
+| `posts` | post | Última foto, filtrada por `from.id = page_id AND is_published`. `created_at` (UTC), `created_date` (São Paulo), `message`, `permalink_url`, `status_type`, `media_type` (`reel` se o `permalink_url` contém `/reel/`; senão pelo `status_type`: `video`, `photo`, `status`), `is_hidden`, `is_expired`, `full_picture`, `last_seen_date` |
 | `post_insights_snapshot` | post × `snapshot_date` | Uma coluna por métrica `lifetime` + `shares_lifetime` (do bronze de `post`) + `snapshot_at` |
 | `page_insights_daily` | página × métrica × período × `metric_date` | Formato longo: `value` (inteiro) e `value_breakdown` (map) |
 
@@ -127,6 +125,10 @@ Regras do silver:
 - **Métricas em JSON** (`post_reactions_by_type_total`, `post_clicks_by_type`) viram
   `MAP<STRING, BIGINT>`. Map vazio `{}` = a API respondeu e não houve nada (a Meta só devolve
   chaves com valor diferente de zero). Map `NULL` = a métrica não veio.
+- **`shares_lifetime` = `get_json_object(shares, '$.count')`, e `shares` ausente vale 0.** A
+  Meta omite o campo em post sem compartilhamento (98 de 692 posts o trazem). A exceção são as
+  fotos de antes da seleção de campos, em que a coluna nem existia: ali o valor é `NULL`. O
+  sinal para distinguir é `is_published IS NULL`, que só acontece nesses arquivos.
 - **`clicks_lifetime` = soma de `post_clicks_by_type`.** `post_clicks` é descartado: falta em
   cerca de um terço dos posts e, onde existe, é igual à soma do `by_type`.
 - **Período `day` das métricas de post é descartado.** Vem sempre 0, com `end_time` congelado.
@@ -134,7 +136,8 @@ Regras do silver:
   'America/Los_Angeles')) - 1`.** O `end_time` marca o fim da janela, à meia-noite do Pacífico.
   O mesmo `metric_date` chega em mais de um sync; vence a extração mais recente.
 - **Checagem de buraco no `page_insights_daily`.** A API devolve só os 2 últimos dias
-  disponíveis e o conector não aceita `since`. Se um `metric_date` faltar na sequência, a
+  disponíveis e o conector não aceita `since`. Com o cron à 01:00, cada sync traz D-3 e D-2:
+  cada dia passa por 2 syncs, e só duas falhas seguidas abrem buraco. Se um `metric_date` faltar na sequência, a
   rodada avisa. O dia fica ausente — sem interpolação, sem como recuperar.
 
 ### Gold
@@ -195,9 +198,8 @@ que não está no feed de posts.
 
 | # | Decisão | Como fecha |
 |---|---|---|
-| D1 | **A janela do `page_insights` avança um dia por dia?** Nos 4 syncs de 29–30/09 veio sempre o mesmo par (26 e 27/09), enquanto o Business Suite já mostrava 28 e 29/09 | Sync de 01/10 precisa trazer `end_time = 2026-09-29T07:00Z` (dia 28/09). Se não trouxer, a checagem de buraco vira alerta de rotina |
-| D2 | **O `lifetime` perde o que tem mais de 2 anos?** A doc de Insights diz que `lifetime` é o período disponível, até 2 anos. Se sim, o delta fica negativo no aniversário de 2 anos e a regra passa a ser: delta só enquanto `snapshot_date < created_date + 24 meses`, com `is_beyond_retention` | Post 6 (`280663778456254_122161958420250905`, publicado 03/10/2024, 353 visualizações em 30/09) no sync de 04/10. Se cair, a regra entra; se não, sai |
-| D3 | Junção de `fan_count`/`followers_count` (por `snapshot_date`) no `page_daily_metrics` (por `metric_date`) | Passo 4 |
+| D1 | **O `lifetime` perde o que tem mais de 2 anos?** A doc de Insights diz que `lifetime` é o período disponível, até 2 anos. Se sim, o delta fica negativo no aniversário de 2 anos e a regra passa a ser: delta só enquanto `snapshot_date < created_date + 24 meses`, com `is_beyond_retention` | Post 6 (`280663778456254_122161958420250905`, publicado 03/10/2024, 353 visualizações em 30/09) no sync de 04/10. Se cair, a regra entra; se não, sai |
+| D2 | Junção de `fan_count`/`followers_count` (por `snapshot_date`) no `page_daily_metrics` (por `metric_date`) | Passo 4 |
 
 ## Diário
 
@@ -232,3 +234,20 @@ visualizações nos 692 posts; o post novo de 29/09 foi 10 → 13 → 18 → 40.
 
 **30/09** — Decidido não criar cópia do conector. Seleção de campos refeita e nova extração
 disparada.
+
+**30/09** — Extração refeita (sync 38, 11:16 São Paulo, manual) com a seleção de campos nova:
+
+- `page` com `fan_count` = `followers_count` = 1.783; `username` nulo (a página não tem).
+- `page_insights` com `id` (`{page_id}/insights/{metric}/{period}`). Os arquivos anteriores não
+  têm a coluna: ler a pasta sem schema explícito escolheu o schema de um arquivo antigo e o
+  `id` sumiu sem erro — a regra do schema explícito provada na prática.
+- `post`: `is_published` true, `is_hidden` e `is_expired` false e `from` = a própria página nos
+  692 posts. `shares` é string JSON `{"count": N}`; o post de 29/09 tem 1, igual à prévia do
+  Business Suite. `attachments` veio `{}` em todos.
+- **A janela do `page_insights` anda.** O sync 38 trouxe `end_time` 28 e 29/09 (dias 27 e 28);
+  28/09 = 483.992, igual ao Business Suite. Às 01:01 o dia 28 ainda não existia; às 11:16 já.
+  A Meta publica o dia entre 04:00 e 14:00 UTC do segundo dia seguinte. Antecipar o atraso
+  exigiria mover o cron para o fim da manhã, desalinhando a foto dos posts do fechamento do dia.
+  Mantido 01:00.
+- Post 6 (`…122161958420250905`) ainda em 353. Post de 29/09: 40 → 51. Nenhum delta negativo
+  entre os syncs 34 e 38.

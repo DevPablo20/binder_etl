@@ -1,4 +1,5 @@
 from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql.types import StructType
 
 from src.config import settings
 
@@ -7,10 +8,14 @@ def read_raw_parquet(
     spark: SparkSession,
     path: str = "",
     bucket: str | None = None,
+    schema: StructType | None = None,
 ) -> DataFrame:
+    """`schema` fixa as colunas lidas: sem ele, o Spark infere de um único arquivo, e um
+    arquivo antigo sem as colunas novas as faz sumir sem erro."""
     b = bucket or settings.bucket_raw
     uri = settings.s3a_uri(b, path)
-    return spark.read.parquet(uri)
+    reader = spark.read.schema(schema) if schema is not None else spark.read
+    return reader.parquet(uri)
 
 
 def read_delta(

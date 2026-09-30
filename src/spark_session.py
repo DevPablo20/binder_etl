@@ -17,6 +17,10 @@ def get_spark_session(
         SparkSession.builder.appName(app_name)
         .master(master)
         .config("spark.jars.packages", SPARK_JARS_PACKAGES)
+        # Os containers (Airflow, catalog-api) rodam em UTC; a máquina de dev, não. Sem fixar,
+        # `to_date`, `from_utc_timestamp` e casts de string para timestamp dão resultados
+        # diferentes conforme onde o pipeline roda.
+        .config("spark.sql.session.timeZone", "UTC")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config(
             "spark.sql.catalog.spark_catalog",

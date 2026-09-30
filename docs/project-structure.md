@@ -15,9 +15,10 @@ binder_etl/
 ├── requirements/
 │   ├── spark.txt
 │   └── airflow.txt
-├── airbyte/README.md        # instalação abctl + conexão TikTok
+├── airbyte/README.md        # instalação abctl + conexões TikTok e Facebook Pages
 ├── dags/
-│   └── tiktok/tiktok_daily.py
+│   ├── tiktok/tiktok_daily.py
+│   └── facebook_organic/facebook_organic_daily.py
 ├── src/
 │   ├── config/settings.py   # MinIO e demais settings
 │   ├── spark_session.py     # Spark + Delta + S3A
@@ -39,6 +40,7 @@ binder_etl/
 │               ├── silver/  # um módulo por stream + registry SILVER_TRANSFORMS
 │               ├── gold/    # um módulo por fato + registry GOLD_TRANSFORMS
 │               └── catalog/ # silver → formato de linha da API
+│       └── facebook_organic/ # mesmo molde, sem catalog/ — ver seção própria
 ├── dev/                     # sandbox Spark, não é código de produção
 │   ├── examples/            # templates de inspeção versionados
 │   └── sandbox/             # scripts pessoais (gitignored)
@@ -62,6 +64,7 @@ binder_etl/
             │   └── test_*.py            # um por fato com lógica não-trivial
             └── catalog/
                 └── test_smoke.py
+        └── facebook_organic/     # espelha src/transformers/facebook_organic/ (sem catalog/)
 ```
 
 ## Convenções de nome
@@ -169,6 +172,29 @@ Fato gold: `ads_daily_metrics` no grão `ad_id + date`.
 | `ad_id` | `ad_id` |
 
 "Ad group" do TikTok corresponde ao nível `ad_group` do Bridge.
+
+## Facebook orgânico
+
+Slug `facebook_organic`. Fluxo e regras: [architecture.md](architecture.md#facebook-orgânico-facebook_organic).
+Registrado em `TRANSFORMERS` e `PLATFORMS`, **fora** de `CATALOG_BY_PLATFORM` — a Catalog API
+responde 404 para ele.
+
+Difere do molde do TikTok em três pontos:
+
+- **`tables.py` declara o schema de cada stream** (`spark.read.schema(...)`), além de
+  `SILVER_TABLES` e das listas de métricas.
+- **O silver não é 1:1 com o bronze.** `SilverTableConfig.bronze_sources` lista os streams de
+  cada tabela, e o transform recebe um `dict` de DataFrames, como no gold.
+- **O bronze acrescenta `page_id` e `snapshot_date`** antes do dedupe (`bronze.prepare`).
+
+| Camada | Tabelas |
+|---|---|
+| Bronze | `page`, `post`, `post_insights`, `page_insights` — chave `id + snapshot_date` |
+| Silver | `pages`, `page_followers_snapshot`, `posts`, `post_insights_snapshot`, `page_insights_daily` |
+| Gold | `post_daily_metrics` (post × `snapshot_date`), `page_daily_metrics` (página × `metric_date`) |
+
+DAG `facebook_organic_daily` às 08:00 UTC — depois do sync da 01:00 de São Paulo e antes do
+corte das 06:00.
 
 ## Guardrail de complexidade
 

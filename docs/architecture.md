@@ -234,3 +234,88 @@ Transporte por HTTP e não por JDBC ou S3: é simétrico ao `catalog-api` que j�
 direção oposta, não exige credencial S3 no backend nem driver JDBC no Spark. O snapshot é da
 ordem de mil linhas de JSON — `spark.createDataFrame()` resolve. Se crescer, troca-se por
 parquet no MinIO sem mudar o modelo.
+
+## Facebook orgânico (`facebook_organic`)
+
+Conteúdo das páginas do Facebook — posts e página —, com o conector oficial do Airbyte como
+está. Não passa pelo Bridge nem pela Catalog API: não existe hierarquia campanha → anúncio.
+
+### O que a fonte entrega
+
+- **Quatro streams, todos Full Refresh + Append** (`page`, `post`, `post_insights`,
+  `page_insights`). Cada sync é uma foto completa; o conector não tem incremental.
+- **Métricas de post só como total acumulado** (`lifetime`). A evolução diária não existe na
+  fonte: é a diferença entre duas fotos. **Histórico que não foi fotografado não se recupera.**
+- **Métricas de página por dia, só os 2 últimos dias disponíveis**, com uns 2 dias de atraso.
+  O conector não aceita `since`: cada dia passa por 2 syncs diários, e duas falhas seguidas
+  abrem um buraco permanente.
+- **Nada separa orgânico de pago nas visualizações.** A Meta tem o breakdown `is_from_ads`,
+  mas a lista de métricas é fixa no manifest do conector. Num post impulsionado, as
+  visualizações são quase todas de anúncio; o total da página é dominado por anúncio.
+- **O Business Suite e a API leem a mesma fonte.** Os números da aba Facebook de um post batem
+  exatamente com o `post_insights`; a lista "Todos os conteúdos" soma Facebook e Instagram
+  nos posts cruzados e não serve de comparação.
+
+### Bronze: uma foto por dia
+
+A regra do TikTok — dedupe pelo id, vence a versão mais recente — aqui apagaria o histórico.
+Todos os streams deduplicam por `id + snapshot_date`, e o silver decide quem é dimensão
+(última foto) e quem é série (todas as fotos).
+
+- **`snapshot_date` é o dia que a foto fecha:** a data em São Paulo de
+  `_airbyte_extracted_at − 6h`. O sync da 01:00 fecha o dia anterior; um sync manual à tarde
+  cai no próprio dia e é substituído pelo da madrugada seguinte.
+- **Raw lido com schema explícito** (`tables.py`). Sem ele, o Spark infere o schema de um
+  arquivo só; se pegar um anterior a uma mudança na seleção de campos, colunas novas somem
+  sem erro.
+- **`page_id` vem do caminho** `raw/airbyte/facebook_organic/{page_id}/{stream}/`. Fotos
+  antigas do `page_insights`, sem `id`, têm o id reconstruído no formato da API
+  (`{page_id}/insights/{metric}/{period}`) — sem isso, as métricas de uma foto teriam a mesma
+  chave nula.
+
+### Silver
+
+| Tabela | Grão | Origem |
+|---|---|---|
+| `pages` | página | última foto de `page` |
+| `page_followers_snapshot` | página × `snapshot_date` | `fan_count`, `followers_count` de `page` |
+| `posts` | post | última foto de `post`, só da própria página e publicado |
+| `post_insights_snapshot` | post × `snapshot_date` | `post_insights` (`lifetime`) + `shares` de `post` |
+| `page_insights_daily` | página × métrica × período × `metric_date` | `page_insights`, array aberto |
+
+- **Map vazio e map nulo são coisas diferentes.** As métricas por tipo (reações, cliques)
+  viram `MAP<STRING, BIGINT>`. A Meta só devolve chaves com valor, então `{}` vale zero; map
+  nulo é métrica que não veio.
+- **`clicks` é a soma de `post_clicks_by_type`.** `post_clicks` falta em cerca de um terço
+  dos posts e, onde existe, é igual à soma.
+- **`shares` ausente vale 0** — a Meta omite o campo em post sem compartilhamento —, exceto
+  em fotos de antes da seleção do campo, em que é desconhecido.
+- **O formato do post sai do link e do `status_type`** (`reel` pelo `/reel/` no permalink).
+  O `attachments` do conector chega vazio.
+- **`metric_date` é o dia anterior ao `end_time` no Pacífico.** O `end_time` é a meia-noite
+  que encerra o dia medido. O silver aponta dias faltando na sequência, sem interpolar.
+
+### Gold
+
+**`post_daily_metrics`** — post × `snapshot_date`. Cada métrica aditiva sai como `_lifetime`
+e `_delta`:
+
+- **Primeira foto de um post:** `new_post` (publicado nas 24h anteriores) tem a vida inteira
+  como delta; `pre_existing` tem histórico desconhecido e delta nulo.
+- **Buraco não é interpolado.** O delta cobre o intervalo inteiro; `gap_days` e
+  `hours_since_prev` dizem quanto.
+- **Delta negativo fica como veio.** Cortar em zero quebra a conservação.
+- **`reach_delta` é alcance novo**, não alcance do dia. E `reach` subestima muito posts
+  antigos: a métrica única é recente na API.
+
+**`page_daily_metrics`** — página × `metric_date`, só o período `day`. `fan_adds_unpaid` é a
+única separação orgânico × pago que a fonte entrega. Seguidores entram pela foto do mesmo dia.
+
+**Os dois fatos nunca se somam nem se cruzam.** O total da página inclui anúncios e conteúdo
+fora do feed de posts.
+
+### Conservação
+
+Duas garantias em `tests/transformers/facebook_organic/test_conservation.py`: cada foto do
+silver vira uma linha do gold com o mesmo total; e, por post e métrica, a foto inicial (se
+`pre_existing`) mais a soma dos deltas é igual ao total da última foto.

@@ -88,6 +88,11 @@ sumiu. Deletados chegam explicitamente com `*_STATUS_DELETE` em `secondary_statu
   unicidade por coordenada externa no Bridge, não o ETL.
 - **Linha não é dinheiro.** Meça conservação por soma de métrica, não por contagem de linhas.
 - **Mudar `start_date` ou *Include Deleted* no Airbyte exige Clear data dos streams.**
+- **Sessão Spark em UTC** (`spark_session.py`). `to_date`, `from_utc_timestamp` e casts de
+  string para timestamp dependem dela; os containers já rodam em UTC, a máquina de dev não.
+- **`facebook_organic` guarda uma foto por dia.** O bronze deduplica por `id + snapshot_date`
+  — é a chave natural mínima de uma fonte que só entrega total acumulado. Deduplicar só pelo
+  id apagaria o histórico. Raw lido com schema explícito (`tables.py`), nunca inferido.
 - A FastAPI de catálogo precisa inicializar o `SparkSession` no lifespan **antes** de aceitar
   tráfego. Trabalho Spark/MinIO é síncrono — rode fora do event loop.
 
@@ -96,19 +101,21 @@ sumiu. Deletados chegam explicitamente com `*_STATUS_DELETE` em `secondary_statu
 ```bash
 python -m src.pipelines.run medallion tiktok    # bronze → silver → gold
 python -m src.pipelines.run bronze tiktok       # camada isolada
+python -m src.pipelines.run medallion facebook_organic  # conteúdo das páginas do Facebook
 docker compose up                               # MinIO + Postgres (meta Airflow) + Airflow
 docker compose --profile dev up spark-dev       # sandbox Spark
 uvicorn src.api.main:app                        # FastAPI de catálogo
 pytest tests/                                   # suíte inteira, todas as plataformas
 pytest tests/transformers/tiktok/               # só TikTok — árvore espelha src/transformers/tiktok/
 pytest tests/transformers/tiktok/test_conservation.py  # invariante de conservação (rode o medallion antes)
+pytest tests/transformers/facebook_organic/     # só facebook_organic (conservação por post incluída)
 ```
 
 ## Documentação
 
 | Arquivo | Quando ler |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | extração, acumulação, gold base e enriquecido, conservação, publicação |
+| [docs/architecture.md](docs/architecture.md) | extração, acumulação, gold base e enriquecido, conservação, publicação, Facebook orgânico |
 | [docs/project-structure.md](docs/project-structure.md) | árvore de diretórios, convenções de nome, split layer/transform, testes |
 | [docs/tech-stack.md](docs/tech-stack.md) | versões e práticas por biblioteca |
 | [docs/plans/](docs/plans/) | trabalho em andamento: iniciativa ativa e backlog |

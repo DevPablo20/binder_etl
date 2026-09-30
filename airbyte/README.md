@@ -104,3 +104,36 @@ Use values from `.env`:
 - Secret key: `MINIO_ROOT_PASSWORD` (default `minioadmin`)
 
 MVP: run sync manually in Airbyte. The Airflow DAG `sync_raw` task is a placeholder until `AirbyteTriggerSyncOperator` is wired.
+
+## Facebook Pages → MinIO connection (`facebook_organic`)
+
+One connection **per page**, all landing under the same prefix. The official connector is
+used as-is (no fork): its metric list is fixed in the connector manifest.
+
+### Source
+
+- Connector: **Facebook Pages** (Graph API v24.0)
+- `page_id`: one page per connection; long-lived Page access token
+
+### Destination
+
+- Same S3/MinIO destination as above, bucket `raw`
+- **Path format:** `airbyte/facebook_organic/{page_id}/{stream}` — the pipeline reads the
+  `page_id` from this path
+
+### Streams to sync
+
+All four streams are **Full Refresh + Append** — the connector offers no incremental mode.
+Each sync is a complete snapshot; the bronze keeps one snapshot per day.
+
+| Stream | Fields to select | Never select |
+|--------|------------------|--------------|
+| `page` | `id`, `name`, `username`, `link`, `category`, `fan_count`, `followers_count` | `page_token` (access token); any edge (`feed`, `posts`, `photos`, …) |
+| `post` | `id`, `from`, `created_time`, `message`, `permalink_url`, `status_type`, `is_published`, `is_hidden`, `is_expired`, `shares`, `full_picture` | `attachments` (always lands as `{}`), `insights` (duplicates `post_insights`), obsolete `type`/`name`/`description`/`caption`/`link`/`picture` |
+| `post_insights` | `id`, `name`, `period`, `values` | `title`, `description` |
+| `page_insights` | `id`, `name`, `period`, `values` | `title`, `description` |
+
+### Schedule
+
+Cron **01:00 America/Sao_Paulo**. The DAG `facebook_organic_daily` runs afterwards, before
+06:00 São Paulo, so the snapshot closes the previous day.

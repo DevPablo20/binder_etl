@@ -17,6 +17,9 @@ repositórios.
 `facebook-organic` — conteúdo orgânico das páginas do Facebook em bronze/silver/gold, só no
 ETL, em [docs/plans/facebook-organic.md](docs/plans/facebook-organic.md).
 
+`instagram-organic` — conteúdo orgânico das contas de Instagram (posts, stories, conta) em
+bronze/silver/gold, só no ETL, em [docs/plans/instagram-organic.md](docs/plans/instagram-organic.md).
+
 ## Arquitetura de enriquecimento (invariantes compartilhadas)
 
 Valem nos três repositórios. Contradizer uma delas é bug, não escolha de implementação.

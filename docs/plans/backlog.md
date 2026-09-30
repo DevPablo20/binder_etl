@@ -15,8 +15,9 @@ Ideias ainda sem escopo. Quando uma delas for escopada, vira um arquivo de inici
   impulsionamento e não separa orgânico × pago nas métricas de post. Quando o Meta Ads entrar
   no lake, o `effective_object_story_id` dos criativos tem o formato do `id` do post
   (`{page_id}_{post_id}`) — um `LEFT JOIN` marca `is_boosted` com base em gasto real.
-- **Instagram orgânico.** Os posts das páginas do Facebook são publicação cruzada do
-  Instagram, e a maior parte do desempenho orgânico está lá. O Facebook sozinho é uma fatia.
+- **Demografia dos seguidores do Instagram no gold.** O `instagram_organic` guarda
+  `follower_demographics` (cidade, país, idade × gênero; top 45 da Meta) só no silver, uma
+  foto por dia. Falta decidir o fato e o uso.
 - **Kwai como segunda plataforma.** O raw já tem `raw/airbyte/kwai/` com os cinco streams
   extraídos; não há transformer, nem entrada no Bridge, nem tela. Decisão tomada em 16/09:
   **só depois do `bridge-enrichment` fechar de ponta a ponta** — a lógica de enriquecimento

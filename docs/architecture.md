@@ -319,3 +319,82 @@ fora do feed de posts.
 Duas garantias em `tests/transformers/facebook_organic/test_conservation.py`: cada foto do
 silver vira uma linha do gold com o mesmo total; e, por post e métrica, a foto inicial (se
 `pre_existing`) mais a soma dos deltas é igual ao total da última foto.
+
+## Instagram orgânico (`instagram_organic`)
+
+Conteúdo orgânico das contas de Instagram — posts, stories e conta —, com o conector oficial do
+Airbyte como está. Mesmo molde do `facebook_organic`: fora do Bridge e da Catalog API, raw lido
+com schema explícito, foto diária no bronze. As regras de foto e delta são compartilhadas em
+`src/transformers/snapshots.py`.
+
+### O que a fonte entrega
+
+- **Um token enxerga todas as contas.** O raw fica em `raw/airbyte/instagram_organic/{stream}/`,
+  sem pasta por conta; todo registro traz `business_account_id` e o `page_id` da página do
+  Facebook ligada — a ponte com o `facebook_organic`. Posts cruzados são objetos diferentes nas
+  duas APIs, sem id em comum.
+- **As métricas de post são orgânicas.** A Meta exclui interações em anúncios de `likes`,
+  `comments` e `views`, e o `like_count` exclui curtidas de posts promovidos. O `reach` de post
+  bate com total − anúncios no Business Suite.
+- **As métricas da conta incluem anúncios.** O `reach` do `user_insights` é o total; o
+  conector não pede o breakdown que separaria.
+- **Métricas de mídia por tipo.** O conector pede um conjunto por tipo (fixo no manifest):
+  `views` só para Reels; `follows` e `profile_visits` nunca para Reels; `likes` e `comments`
+  nunca para carrossel; vídeo de feed antigo só `reach` e `saved`. **Métrica não pedida vem
+  nula e continua nula** — nunca vira 0. Curtidas e comentários de todos os tipos vêm do
+  `like_count`/`comments_count` do stream `media`.
+- **A conta é uma série diária com histórico.** O `user_insights` é incremental, traz até 30
+  dias e relê o dia anterior a cada sync.
+- **Stories só existem por 24h**, e as métricas deles também. A conexão de stories roda de
+  hora em hora; a última leitura é o número final.
+- **Limites da API:** o `/media` devolve as 10 mil mídias mais recentes por conta; as métricas
+  ficam guardadas por até 2 anos.
+
+### Bronze
+
+| Stream | Chave de dedupe | Natureza |
+|---|---|---|
+| `users`, `media`, `media_insights` | `id`, `snapshot_date` | foto diária |
+| `user_lifetime_insights` | `business_account_id`, `metric`, `breakdown`, `snapshot_date` | foto diária |
+| `user_insights` | `business_account_id`, `date` | série nativa; vence a leitura mais recente |
+| `stories`, `story_insights` | `id` | só a última leitura |
+
+O `user_insights` descarta linhas sem `date` — o primeiro sync traz linhas vazias, só com ids.
+
+### Silver
+
+| Tabela | Grão | Origem |
+|---|---|---|
+| `accounts` | conta | última foto de `users` |
+| `account_followers_snapshot` | conta × `snapshot_date` | `followers_count`, `follows_count`, `media_count` |
+| `account_insights_daily` | conta × `metric_date` | `user_insights` |
+| `follower_demographics_snapshot` | conta × `snapshot_date` × `breakdown` × valor | `user_lifetime_insights`; só no silver |
+| `media` | mídia | última foto de `media`, com `format` (`reel`, `carousel`, `image`, `video`) |
+| `media_insights_snapshot` | mídia × `snapshot_date` | `media_insights` + `like_count`/`comments_count` de `media` |
+| `stories` | story | `stories` + `story_insights`, última leitura |
+
+- **`metric_date` é a própria data do `date`, no Pacífico — sem −1.** No Instagram o `date` é a
+  meia-noite que **inicia** o dia, o contrário do `end_time` das páginas do Facebook.
+- **O dia mais recente está em andamento.** `is_partial` marca a leitura feita antes de o dia
+  terminar; a releitura do sync seguinte fecha o dia.
+- **`follower_count` da API é o número de novos seguidores do dia** (`new_followers`). O total
+  vem da foto de `users`. O dia recente vem com 0 até a Meta calcular.
+- **Story sem insights sobrevive.** A Meta devolve erro para métrica de story com valor menor
+  que 5; `hours_live_at_last_read` diz com que idade o story foi lido pela última vez.
+
+### Gold
+
+- **`media_daily_metrics`** — mídia × `snapshot_date`, `_lifetime` e `_delta` com as regras de
+  `snapshots.py`. Orgânico. Delta negativo é frequente e real: comentário apagado, descurtida,
+  salvamento desfeito, `reach` estimado revisado para baixo.
+- **`account_daily_metrics`** — conta × `metric_date`: `reach` (total, inclui anúncios),
+  `reach_week` e `reach_days_28` (janelas móveis, não somam), `new_followers`, `is_partial` e os
+  totais da foto do mesmo dia.
+- **`story_metrics`** — um story por linha, com os números da última leitura.
+
+O alcance da conta nunca se soma ao dos posts: é único e inclui anúncios.
+
+### Conservação
+
+`tests/transformers/instagram_organic/test_conservation.py`, com as mesmas duas garantias do
+`facebook_organic`, por mídia.

@@ -93,9 +93,12 @@ sumiu. Deletados chegam explicitamente com `*_STATUS_DELETE` em `secondary_statu
 - **Mudar `start_date` ou *Include Deleted* no Airbyte exige Clear data dos streams.**
 - **Sessão Spark em UTC** (`spark_session.py`). `to_date`, `from_utc_timestamp` e casts de
   string para timestamp dependem dela; os containers já rodam em UTC, a máquina de dev não.
-- **`facebook_organic` guarda uma foto por dia.** O bronze deduplica por `id + snapshot_date`
-  — é a chave natural mínima de uma fonte que só entrega total acumulado. Deduplicar só pelo
-  id apagaria o histórico. Raw lido com schema explícito (`tables.py`), nunca inferido.
+- **Plataformas orgânicas guardam uma foto por dia.** No `facebook_organic` e no
+  `instagram_organic`, o bronze dos streams full refresh deduplica por `id + snapshot_date` — é
+  a chave natural mínima de uma fonte que só entrega total acumulado. Deduplicar só pelo id
+  apagaria o histórico. Raw lido com schema explícito (`tables.py`), nunca inferido.
+- **Conexões do Airbyte sempre em Append, nunca Overwrite.** Overwrite apaga os arquivos
+  anteriores do stream a cada sync; o bronze só acumula o que ainda está no raw quando roda.
 - A FastAPI de catálogo precisa inicializar o `SparkSession` no lifespan **antes** de aceitar
   tráfego. Trabalho Spark/MinIO é síncrono — rode fora do event loop.
 
@@ -105,6 +108,7 @@ sumiu. Deletados chegam explicitamente com `*_STATUS_DELETE` em `secondary_statu
 python -m src.pipelines.run medallion tiktok    # bronze → silver → gold
 python -m src.pipelines.run bronze tiktok       # camada isolada
 python -m src.pipelines.run medallion facebook_organic  # conteúdo das páginas do Facebook
+python -m src.pipelines.run medallion instagram_organic # conteúdo das contas de Instagram
 docker compose up                               # MinIO + Postgres (meta Airflow) + Airflow
 docker compose --profile dev up spark-dev       # sandbox Spark
 uvicorn src.api.main:app                        # FastAPI de catálogo
@@ -112,13 +116,14 @@ pytest tests/                                   # suíte inteira, todas as plata
 pytest tests/transformers/tiktok/               # só TikTok — árvore espelha src/transformers/tiktok/
 pytest tests/transformers/tiktok/test_conservation.py  # invariante de conservação (rode o medallion antes)
 pytest tests/transformers/facebook_organic/     # só facebook_organic (conservação por post incluída)
+pytest tests/transformers/instagram_organic/    # só instagram_organic (conservação por mídia incluída)
 ```
 
 ## Documentação
 
 | Arquivo | Quando ler |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | extração, acumulação, gold base e enriquecido, conservação, publicação, Facebook orgânico |
+| [docs/architecture.md](docs/architecture.md) | extração, acumulação, gold base e enriquecido, conservação, publicação, Facebook e Instagram orgânicos |
 | [docs/project-structure.md](docs/project-structure.md) | árvore de diretórios, convenções de nome, split layer/transform, testes |
 | [docs/tech-stack.md](docs/tech-stack.md) | versões e práticas por biblioteca |
 | [docs/plans/](docs/plans/) | trabalho em andamento: iniciativa ativa e backlog |

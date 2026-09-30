@@ -137,3 +137,40 @@ Each sync is a complete snapshot; the bronze keeps one snapshot per day.
 
 Cron **01:00 America/Sao_Paulo**. The DAG `facebook_organic_daily` runs afterwards, before
 06:00 São Paulo, so the snapshot closes the previous day.
+
+## Instagram → MinIO connections (`instagram_organic`)
+
+One access token sees **every** Instagram professional account linked to it — no per-account
+connection. Every record carries `business_account_id` (and the linked Facebook `page_id`), so
+the path has no account folder. The official connector is used as-is: the metrics requested per
+media type are fixed in its manifest.
+
+Two connections write to the same destination, bucket `raw`, **path format
+`airbyte/instagram_organic/{stream}`**:
+
+| Connection | Streams | Schedule (Quartz cron) |
+|------------|---------|------------------------|
+| main | `users`, `user_insights`, `user_lifetime_insights`, `media`, `media_insights` | `0 0 1 * * ?` — 01:00 America/Sao_Paulo |
+| stories | `stories`, `story_insights` | `0 0 * * * ?` — every hour |
+
+Stories get their own hourly connection because story metrics only exist while the story is
+live (24h): the last hourly reading is the final number.
+
+**Every stream is Append — never Overwrite.** Overwrite deletes the previous files of the
+stream on each sync; the stories connection would then keep only the last hour, and a story that
+expired between two DAG runs would vanish before the bronze reads it. `user_insights` is
+**Incremental + Append** (cursor `date`, 1-day lookback); all others are **Full Refresh +
+Append**. Leave the `Api` stream unselected — the connector still uses it internally.
+
+| Stream | Fields to select | Never select |
+|--------|------------------|--------------|
+| `users` | `id`, `username`, `name`, `page_id`, `followers_count`, `follows_count`, `media_count` | `profile_picture_url` (expires), `biography`, `website`, `ig_id` |
+| `user_insights` | all | — |
+| `user_lifetime_insights` | all | — |
+| `media` | `id`, `ig_id`, `caption`, `permalink`, `timestamp`, `media_type`, `media_product_type`, **`like_count`**, **`comments_count`**, `is_comment_enabled`, `thumbnail_url`, `username`, `business_account_id`, `page_id` | `children` (one extra API call per carousel item), `owner`, `media_url` (expires; null for licensed audio) |
+| `media_insights` | all but `total_interactions` | `total_interactions` (never requested — always null) |
+| `stories` | `id`, `caption`, `permalink`, `shortcode`, `timestamp`, `media_type`, `media_product_type`, `thumbnail_url`, `business_account_id`, `page_id` | `like_count`, `media_url`, `owner`, `username`, `ig_id` |
+| `story_insights` | all | — |
+
+`like_count` and `comments_count` matter: `media_insights` does not request likes and comments
+for carousels, and the `media` stream returns them for every media type (organic only).

@@ -15,10 +15,11 @@ binder_etl/
 ├── requirements/
 │   ├── spark.txt
 │   └── airflow.txt
-├── airbyte/README.md        # instalação abctl + conexões TikTok e Facebook Pages
+├── airbyte/README.md        # instalação abctl + conexões TikTok, Facebook Pages e Instagram
 ├── dags/
 │   ├── tiktok/tiktok_daily.py
-│   └── facebook_organic/facebook_organic_daily.py
+│   ├── facebook_organic/facebook_organic_daily.py
+│   └── instagram_organic/instagram_organic_daily.py
 ├── src/
 │   ├── config/settings.py   # MinIO e demais settings
 │   ├── spark_session.py     # Spark + Delta + S3A
@@ -31,6 +32,7 @@ binder_etl/
 │   ├── pipelines/run.py     # CLI: run {bronze|silver|gold|medallion} {platform}
 │   └── transformers/
 │       ├── base.py          # base compartilhada fina — inclui dedupe()
+│       ├── snapshots.py     # foto diária e delta entre fotos — plataformas orgânicas
 │       └── tiktok/
 │           ├── tables.py    # SSOT: streams, dedupe, contrato de join, entidades de catálogo
 │           ├── bronze.py    # orquestrador (I/O + ETL_STRICT + acumulação)
@@ -40,7 +42,8 @@ binder_etl/
 │               ├── silver/  # um módulo por stream + registry SILVER_TRANSFORMS
 │               ├── gold/    # um módulo por fato + registry GOLD_TRANSFORMS
 │               └── catalog/ # silver → formato de linha da API
-│       └── facebook_organic/ # mesmo molde, sem catalog/ — ver seção própria
+│       ├── facebook_organic/ # mesmo molde, sem catalog/ — ver seção própria
+│       └── instagram_organic/ # idem
 ├── dev/                     # sandbox Spark, não é código de produção
 │   ├── examples/            # templates de inspeção versionados
 │   └── sandbox/             # scripts pessoais (gitignored)
@@ -64,7 +67,8 @@ binder_etl/
             │   └── test_*.py            # um por fato com lógica não-trivial
             └── catalog/
                 └── test_smoke.py
-        └── facebook_organic/     # espelha src/transformers/facebook_organic/ (sem catalog/)
+        ├── facebook_organic/     # espelha src/transformers/facebook_organic/ (sem catalog/)
+        └── instagram_organic/    # idem
 ```
 
 ## Convenções de nome
@@ -195,6 +199,32 @@ Difere do molde do TikTok em três pontos:
 
 DAG `facebook_organic_daily` às 08:00 UTC — depois do sync da 01:00 de São Paulo e antes do
 corte das 06:00.
+
+## Instagram orgânico
+
+Slug `instagram_organic`. Fluxo e regras: [architecture.md](architecture.md#instagram-orgânico-instagram_organic).
+Mesmo molde do `facebook_organic` e o mesmo registro: `TRANSFORMERS` e `PLATFORMS`, fora de
+`CATALOG_BY_PLATFORM`.
+
+- **A chave de dedupe varia por stream** (`InstagramStream.dedupe_columns`): foto diária,
+  série nativa (`user_insights`) ou última leitura (stories). `required_column` descarta as
+  linhas vazias do `user_insights`.
+- **Não há `page_id` no caminho** — todo registro traz `business_account_id`.
+
+| Camada | Tabelas |
+|---|---|
+| Bronze | `users`, `user_insights`, `user_lifetime_insights`, `media`, `media_insights`, `stories`, `story_insights` |
+| Silver | `accounts`, `account_followers_snapshot`, `account_insights_daily`, `follower_demographics_snapshot`, `media`, `media_insights_snapshot`, `stories` |
+| Gold | `media_daily_metrics` (mídia × `snapshot_date`), `account_daily_metrics` (conta × `metric_date`), `story_metrics` (story) |
+
+DAG `instagram_organic_daily` às 08:00 UTC.
+
+## Plataformas orgânicas: código compartilhado
+
+`src/transformers/snapshots.py` guarda o que o Facebook e o Instagram fazem igual: o
+`snapshot_date` (dia que a foto fecha), `latest_per` (última foto por chave) e
+`add_lifetime_deltas` (delta entre fotos, `baseline_kind`, `gap_days`). Os orquestradores de
+camada continuam copiados por plataforma, no molde do TikTok.
 
 ## Guardrail de complexidade
 

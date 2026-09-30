@@ -22,6 +22,13 @@ def test_facebook_organic_is_a_platform_without_catalog():
         get_catalog_transforms("facebook_organic")
 
 
+def test_instagram_organic_is_a_platform_without_catalog():
+    assert "instagram_organic" in PLATFORMS
+    assert "instagram_organic" not in CATALOG_BY_PLATFORM
+    with pytest.raises(KeyError):
+        get_catalog_transforms("instagram_organic")
+
+
 def test_pipeline_cli_prints_usage_without_args():
     result = subprocess.run(
         [sys.executable, "-m", "src.pipelines.run"],

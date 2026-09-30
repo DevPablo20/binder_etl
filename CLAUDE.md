@@ -14,6 +14,9 @@ materializa o **gold enriquecido**.
 [docs/plans/bridge-enrichment.md](docs/plans/bridge-enrichment.md). Plano único dos três
 repositórios.
 
+`facebook-organic` — conteúdo orgânico das páginas do Facebook em bronze/silver/gold, só no
+ETL, em [docs/plans/facebook-organic.md](docs/plans/facebook-organic.md).
+
 ## Arquitetura de enriquecimento (invariantes compartilhadas)
 
 Valem nos três repositórios. Contradizer uma delas é bug, não escolha de implementação.

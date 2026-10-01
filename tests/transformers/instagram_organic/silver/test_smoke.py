@@ -11,7 +11,7 @@ EXPECTED_COLUMNS = {
     "account_insights_daily": ("business_account_id", "metric_date", "is_partial", "reach"),
     "follower_demographics_snapshot": ("business_account_id", "breakdown", "followers"),
     "media": ("media_id", "business_account_id", "format", "created_at"),
-    "media_insights_snapshot": ("media_id", "snapshot_date", "likes_lifetime", "reach_lifetime"),
+    "media_metrics_daily": ("media_id", "snapshot_date", "likes_lifetime", "likes_delta"),
     "stories": ("story_id", "business_account_id", "reach", "last_read_at"),
 }
 

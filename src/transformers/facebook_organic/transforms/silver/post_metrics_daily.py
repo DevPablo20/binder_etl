@@ -15,13 +15,35 @@ from pyspark.sql.functions import (
 )
 from pyspark.sql.types import LongType, MapType, StringType
 
-from src.transformers.facebook_organic.tables import POST_MAP_METRICS, POST_SCALAR_METRICS
+from src.transformers.facebook_organic.tables import (
+    POST_MAP_METRICS,
+    POST_SCALAR_METRICS,
+    REACTION_TYPES,
+)
+from src.transformers.snapshots import add_lifetime_deltas, latest_per, local_date
 
 COUNT_MAP = MapType(StringType(), LongType())
 
+# Métricas aditivas: cada uma sai com `{m}_lifetime` (o total acumulado na foto) e `{m}_delta`
+# (a variação desde a foto anterior do mesmo post).
+ADDITIVE_METRICS: tuple[str, ...] = (
+    "media_views",
+    "reach",
+    "clicks",
+    "reactions_total",
+    *(f"reaction_{reaction}" for reaction in REACTION_TYPES),
+    "shares",
+)
+
 
 def transform(sources: dict[str, DataFrame]) -> DataFrame:
-    """Foto diária das métricas de post: post × `snapshot_date`, uma coluna por métrica.
+    """Série diária das métricas de post: post × `snapshot_date`.
+
+    A Meta só entrega o total acumulado do post (`lifetime`). Aqui cada foto diária vira uma
+    linha com o total (`{m}_lifetime`) e a variação desde a foto anterior (`{m}_delta`), com as
+    regras de `src/transformers/snapshots.py`: primeira foto (`baseline_kind`), buraco não
+    interpolado (`gap_days`, `hours_since_prev`), delta negativo mantido. É o molde "métrica por
+    dia" em que a gold consome; as colunas de controle ficam aqui, para auditoria.
 
     As métricas chegam em formato longo (uma linha por métrica), todas com período
     `lifetime` — o total acumulado do post até o momento da foto. O período `day` vem sempre
@@ -75,21 +97,42 @@ def transform(sources: dict[str, DataFrame]) -> DataFrame:
         shares_lifetime(col("shares"), col("is_published")).alias("shares_lifetime"),
     )
 
-    return snapshot.join(shares, ["post_id", "snapshot_date"], "left").select(
-        col("post_id").cast("string").alias("post_id"),
-        col("page_id").cast("string").alias("page_id"),
-        col("snapshot_date"),
-        col("snapshot_at"),
-        col("media_views_lifetime"),
-        col("reach_lifetime"),
-        col("clicks_lifetime"),
-        col("clicks_by_type_lifetime"),
-        col("reactions_total_lifetime"),
-        col("reactions_by_type_lifetime"),
-        col("shares_lifetime"),
-        col("_airbyte_raw_ids"),
-        col("snapshot_at").alias("_airbyte_extracted_at"),
+    # Data de publicação para o `baseline_kind`: a da última foto do post.
+    published = latest_per(post, "id").select(
+        col("id").alias("post_id"),
+        col("created_time").alias("created_at"),
+        local_date(col("created_time")).alias("created_date"),
     )
+
+    series = (
+        snapshot.join(shares, ["post_id", "snapshot_date"], "left")
+        .join(published, "post_id", "left")
+        .select(
+            col("post_id").cast("string").alias("post_id"),
+            col("page_id").cast("string").alias("page_id"),
+            col("snapshot_date"),
+            col("snapshot_at"),
+            col("created_at"),
+            col("created_date"),
+            col("media_views_lifetime"),
+            col("reach_lifetime"),
+            col("clicks_lifetime"),
+            col("clicks_by_type_lifetime"),
+            col("reactions_total_lifetime"),
+            col("reactions_by_type_lifetime"),
+            *(
+                reaction_count(col("reactions_by_type_lifetime"), reaction).alias(
+                    f"reaction_{reaction}_lifetime"
+                )
+                for reaction in REACTION_TYPES
+            ),
+            col("shares_lifetime"),
+            col("_airbyte_raw_ids"),
+            col("snapshot_at").alias("_airbyte_extracted_at"),
+        )
+    )
+
+    return add_lifetime_deltas(series, "post_id", ADDITIVE_METRICS)
 
 
 def map_total(counts):
@@ -110,3 +153,9 @@ def shares_lifetime(shares, is_published):
     return when(is_published.isNull(), lit(None).cast("long")).otherwise(
         coalesce(count, lit(0).cast("long"))
     )
+
+
+def reaction_count(reactions, reaction: str):
+    """Chave ausente num map presente vale 0 (a Meta só devolve tipos com valor); map nulo
+    — métrica que não veio — continua nulo."""
+    return when(reactions.isNotNull(), coalesce(reactions[reaction], lit(0).cast("long")))

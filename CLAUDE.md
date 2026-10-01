@@ -63,7 +63,7 @@ não outros. Por isso o nível de ad_group só classifica: a identificação ele
 | Raw | `raw/airbyte/{platform}/{stream}/` | Parquet | Landing do Airbyte — nunca editar à mão. Acumula um arquivo por sync |
 | Bronze | `bronze/{platform}/{table}/` | Delta | Camada acumuladora: union com o existente + dedupe pela chave natural |
 | Silver | `silver/{platform}/{table}/` | Delta | Renomes e tipos corretos; o fato descarta ad × dia sem nenhuma métrica |
-| Gold | `gold/{platform}/{fact}/` | Delta | Fatos no grão de negócio |
+| Gold | `gold/{platform}/{fact}/` | Delta | Fatos no grão de negócio. As orgânicas compartilham `gold/organic/{tabela}/` |
 
 **Existência de objeto vem do status, não de `_airbyte_extracted_at`.** No incremental, um
 objeto só é reextraído quando muda, então um `extracted_at` antigo não significa que ele
@@ -97,6 +97,9 @@ sumiu. Deletados chegam explicitamente com `*_STATUS_DELETE` em `secondary_statu
   `instagram_organic`, o bronze dos streams full refresh deduplica por `id + snapshot_date` — é
   a chave natural mínima de uma fonte que só entrega total acumulado. Deduplicar só pelo id
   apagaria o histórico. Raw lido com schema explícito (`tables.py`), nunca inferido.
+- **Gold orgânica: cada rede grava só a sua partição.** Facebook e Instagram escrevem nas
+  mesmas tabelas de `gold/organic/`, com `replace_where` na coluna `platform`. Overwrite da
+  tabela inteira apagaria a outra rede. A gold é de consumo — a mecânica do delta fica no silver.
 - **Conexões do Airbyte sempre em Append, nunca Overwrite.** Overwrite apaga os arquivos
   anteriores do stream a cada sync; o bronze só acumula o que ainda está no raw quando roda.
 - A FastAPI de catálogo precisa inicializar o `SparkSession` no lifespan **antes** de aceitar

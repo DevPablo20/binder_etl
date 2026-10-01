@@ -46,7 +46,7 @@ Facebook:
 | 1 | `tables.py`: streams, schemas explícitos, chaves, métricas por tipo de mídia | feito 30/09 |
 | 2 | Bronze: foto diária dos streams full refresh; série e última leitura nos demais | feito 30/09 |
 | 3 | Silver: contas, séries da conta, mídia, fotos de mídia, stories, demografia | feito 30/09 |
-| 4 | Gold: `media_daily_metrics`, `account_daily_metrics`, `story_metrics` | feito 30/09 |
+| 4 | Gold: `media_daily_metrics`, `account_daily_metrics`, `story_metrics` | feito 30/09 — substituída pela gold orgânica compartilhada (ver diário) |
 | 5 | Testes: unitários por transform + conservação por mídia | feito 30/09 |
 | 6 | Registro em `TRANSFORMERS`/`PLATFORMS`, fora do catálogo | feito 30/09 |
 | 7 | DAG `instagram_organic_daily` | feito 30/09 |
@@ -135,3 +135,23 @@ o do Facebook; a revisão tardia da conta (D2) será medida como proposto.
 
 **30/09** — Conexão de stories trocada para Full Refresh + Append. O histórico de stories começa
 a partir daqui.
+
+**30/09** — **Gold reorganizada como camada de consumo, compartilhada com o Facebook.** A gold
+antiga expunha a mecânica de construção (placar acumulado, `baseline_kind`, horas entre fotos)
+e parecia bronze. Decisão:
+
+- A série diária (total e delta por foto) passa a ser padronização e vai para o silver
+  (`media_metrics_daily`), com as colunas de controle para auditoria.
+- A gold vira `gold/organic/`, com as duas redes nas mesmas tabelas, nomes de negócio e
+  `metrics_scope` (`organic` × `total`): `content` (dimensão do post, sem métrica),
+  `content_daily` (cada métrica em par: o do dia e `_total` até o dia), `account_daily` e
+  `stories`. Cada rede grava só a sua partição (`replaceWhere` em `platform`).
+- O total atual de um post é o `_total` na última data do post; ele não pode vir da soma dos
+  dias, que só conta a atividade desde o início do acompanhamento.
+
+Implementado e rodado contra o MinIO de `192.168.10.80`: 2.681 mídias em `content`, 5.362 linhas
+em `content_daily`, 155 dias de conta em `account_daily`, 12 stories. Testes: 54 orgânicos
+verdes contra o remoto (conservação incluída); suíte inteira verde no local (73 passed, 6
+skipped). As tabelas antigas continuam no MinIO e não são mais escritas:
+`gold/instagram_organic/{media_daily_metrics,account_daily_metrics,story_metrics}` e
+`silver/instagram_organic/media_insights_snapshot`.

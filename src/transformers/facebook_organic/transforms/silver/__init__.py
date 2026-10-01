@@ -6,7 +6,7 @@ from . import (
     page_followers_snapshot,
     page_insights_daily,
     pages,
-    post_insights_snapshot,
+    post_metrics_daily,
     posts,
 )
 
@@ -18,6 +18,6 @@ SILVER_TRANSFORMS: dict[str, SilverTransform] = {
     "pages": pages.transform,
     "page_followers_snapshot": page_followers_snapshot.transform,
     "posts": posts.transform,
-    "post_insights_snapshot": post_insights_snapshot.transform,
+    "post_metrics_daily": post_metrics_daily.transform,
     "page_insights_daily": page_insights_daily.transform,
 }

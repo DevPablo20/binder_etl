@@ -33,6 +33,7 @@ binder_etl/
 │   └── transformers/
 │       ├── base.py          # base compartilhada fina — inclui dedupe()
 │       ├── snapshots.py     # foto diária e delta entre fotos — plataformas orgânicas
+│       ├── organic_gold.py  # contrato da gold orgânica compartilhada (gold/organic/)
 │       └── tiktok/
 │           ├── tables.py    # SSOT: streams, dedupe, contrato de join, entidades de catálogo
 │           ├── bronze.py    # orquestrador (I/O + ETL_STRICT + acumulação)
@@ -53,6 +54,7 @@ binder_etl/
 └── tests/
     ├── test_pipeline.py         # CLI/registry — não é de uma plataforma
     ├── test_spark_minio.py      # plumbing Spark + MinIO/S3A
+    ├── test_snapshots.py        # regras do delta entre fotos — compartilhado pelas orgânicas
     └── transformers/
         └── tiktok/               # espelha src/transformers/tiktok/
             ├── test_conservation.py  # invariante de conservação — cruza camadas
@@ -194,8 +196,8 @@ Difere do molde do TikTok em três pontos:
 | Camada | Tabelas |
 |---|---|
 | Bronze | `page`, `post`, `post_insights`, `page_insights` — chave `id + snapshot_date` |
-| Silver | `pages`, `page_followers_snapshot`, `posts`, `post_insights_snapshot`, `page_insights_daily` |
-| Gold | `post_daily_metrics` (post × `snapshot_date`), `page_daily_metrics` (página × `metric_date`) |
+| Silver | `pages`, `page_followers_snapshot`, `posts`, `post_metrics_daily`, `page_insights_daily` |
+| Gold | partição `facebook` de `gold/organic/`: `content`, `content_daily`, `account_daily` |
 
 DAG `facebook_organic_daily` às 08:00 UTC — depois do sync da 01:00 de São Paulo e antes do
 corte das 06:00.
@@ -214,17 +216,24 @@ Mesmo molde do `facebook_organic` e o mesmo registro: `TRANSFORMERS` e `PLATFORM
 | Camada | Tabelas |
 |---|---|
 | Bronze | `users`, `user_insights`, `user_lifetime_insights`, `media`, `media_insights`, `stories`, `story_insights` |
-| Silver | `accounts`, `account_followers_snapshot`, `account_insights_daily`, `follower_demographics_snapshot`, `media`, `media_insights_snapshot`, `stories` |
-| Gold | `media_daily_metrics` (mídia × `snapshot_date`), `account_daily_metrics` (conta × `metric_date`), `story_metrics` (story) |
+| Silver | `accounts`, `account_followers_snapshot`, `account_insights_daily`, `follower_demographics_snapshot`, `media`, `media_metrics_daily`, `stories` |
+| Gold | partição `instagram` de `gold/organic/`: `content`, `content_daily`, `account_daily`, `stories` |
 
 DAG `instagram_organic_daily` às 08:00 UTC.
 
 ## Plataformas orgânicas: código compartilhado
 
-`src/transformers/snapshots.py` guarda o que o Facebook e o Instagram fazem igual: o
-`snapshot_date` (dia que a foto fecha), `latest_per` (última foto por chave) e
-`add_lifetime_deltas` (delta entre fotos, `baseline_kind`, `gap_days`). Os orquestradores de
-camada continuam copiados por plataforma, no molde do TikTok.
+`src/transformers/snapshots.py` guarda o que o Facebook e o Instagram fazem igual no bronze e
+no silver: o `snapshot_date` (dia que a foto fecha), `latest_per` (última foto por chave) e
+`add_lifetime_deltas` (delta entre fotos, `baseline_kind`, `gap_days`).
+
+`src/transformers/organic_gold.py` é o contrato da gold compartilhada: nomes, ordem e tipos de
+`content`, `content_daily`, `account_daily` e `stories`, e o `conform` que coloca a saída de
+cada rede nesse schema. A gold fica em `gold/organic/{tabela}` — fora do padrão
+`{layer}/{platform}/{table}` —, particionada por `platform`; cada orquestrador grava só a sua
+partição (`write_delta(..., replace_where="platform = '...'")`).
+
+Os orquestradores de camada continuam copiados por plataforma, no molde do TikTok.
 
 ## Guardrail de complexidade
 

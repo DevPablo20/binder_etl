@@ -7,7 +7,12 @@ from src.config import settings
 from src.io.reader import read_delta
 from src.io.writer import write_delta
 from src.transformers.base import BaseTransformer
-from src.transformers.instagram_organic.tables import GOLD_FACTS, PLATFORM, GoldFactConfig
+from src.transformers.instagram_organic.tables import (
+    GOLD_FACTS,
+    GOLD_PLATFORM,
+    PLATFORM,
+    GoldFactConfig,
+)
 from src.transformers.instagram_organic.transforms.gold import GOLD_TRANSFORMS
 
 logger = logging.getLogger(__name__)
@@ -35,7 +40,16 @@ class InstagramOrganicGoldTransformer(BaseTransformer):
             return
 
         row_count = df.count()
-        write_delta(df, "gold", fact.gold_table_name, mode="overwrite")
+        # A gold orgânica é compartilhada entre as redes: cada uma sobrescreve só a sua
+        # partição, sem apagar a da outra.
+        write_delta(
+            df,
+            "gold",
+            fact.gold_table_name,
+            mode="overwrite",
+            partition_by=["platform"],
+            replace_where=f"platform = '{GOLD_PLATFORM}'",
+        )
 
         logger.info(
             "Wrote gold/%s: %d rows",

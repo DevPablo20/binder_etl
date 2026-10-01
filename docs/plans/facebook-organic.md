@@ -41,7 +41,7 @@ só entrega como total acumulado.
 | 1 | `tables.py`: streams, schemas explícitos, chaves, métricas | feito 30/09 |
 | 2 | Bronze: foto diária de todas as streams | feito 30/09 |
 | 3 | Silver: dimensões, séries e página diária | feito 30/09 |
-| 4 | Gold: `post_daily_metrics` e `page_daily_metrics` | feito 30/09 |
+| 4 | Gold: `post_daily_metrics` e `page_daily_metrics` | feito 30/09 — substituída pela gold orgânica compartilhada (ver diário) |
 | 5 | Testes: unitários por transform + conservação por post | feito 30/09 |
 | 6 | Registro em `TRANSFORMERS`/`PLATFORMS` | feito 30/09 — a rota do catálogo já devolvia 404 (o `KeyError` de `get_catalog_transforms` vira 404); não precisou mudar |
 | 7 | DAG `facebook_organic_daily` | feito 30/09 |
@@ -129,3 +129,22 @@ MinIO de `192.168.10.80` (o de desenvolvimento local não tem o raw do Facebook)
   traz os seguidores ao fim de D).
 - A sessão Spark passou a ser fixada em UTC para todo o repo: a máquina de dev está em
   America/Sao_Paulo e os containers em UTC, e as datas derivadas dependiam disso.
+
+**30/09** — **Gold reorganizada como camada de consumo, compartilhada com o Instagram.** A gold
+antiga expunha a mecânica de construção (placar acumulado, `baseline_kind`, horas entre fotos)
+e parecia bronze. Decisão:
+
+- A série diária (total e delta por foto) passa a ser padronização e vai para o silver
+  (`post_metrics_daily`), com as colunas de controle para auditoria.
+- A gold vira `gold/organic/`, com as duas redes nas mesmas tabelas, nomes de negócio e
+  `metrics_scope` (`organic` × `total`): `content` (dimensão do post, sem métrica),
+  `content_daily` (cada métrica em par: o do dia e `_total` até o dia), `account_daily` e
+  `stories`. Cada rede grava só a sua partição (`replaceWhere` em `platform`).
+- O total atual de um post é o `_total` na última data do post; ele não pode vir da soma dos
+  dias, que só conta a atividade desde o início do acompanhamento.
+
+Implementado e rodado contra o MinIO de `192.168.10.80`: 692 posts em `content`, 1.384 linhas em
+`content_daily`, 3 dias em `account_daily`. Testes: 54 orgânicos verdes contra o remoto
+(conservação incluída); suíte inteira verde no local (73 passed, 6 skipped). As tabelas antigas
+continuam no MinIO e não são mais escritas: `gold/facebook_organic/post_daily_metrics`,
+`gold/facebook_organic/page_daily_metrics` e `silver/facebook_organic/post_insights_snapshot`.

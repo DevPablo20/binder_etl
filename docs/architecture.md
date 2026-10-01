@@ -280,7 +280,7 @@ Todos os streams deduplicam por `id + snapshot_date`, e o silver decide quem é 
 | `pages` | página | última foto de `page` |
 | `page_followers_snapshot` | página × `snapshot_date` | `fan_count`, `followers_count` de `page` |
 | `posts` | post | última foto de `post`, só da própria página e publicado |
-| `post_insights_snapshot` | post × `snapshot_date` | `post_insights` (`lifetime`) + `shares` de `post` |
+| `post_metrics_daily` | post × `snapshot_date` | série diária: `post_insights` (`lifetime`) + `shares` de `post`, total e delta |
 | `page_insights_daily` | página × métrica × período × `metric_date` | `page_insights`, array aberto |
 
 - **Map vazio e map nulo são coisas diferentes.** As métricas por tipo (reações, cliques)
@@ -295,10 +295,12 @@ Todos os streams deduplicam por `id + snapshot_date`, e o silver decide quem é 
 - **`metric_date` é o dia anterior ao `end_time` no Pacífico.** O `end_time` é a meia-noite
   que encerra o dia medido. O silver aponta dias faltando na sequência, sem interpolar.
 
-### Gold
+### Série diária no silver
 
-**`post_daily_metrics`** — post × `snapshot_date`. Cada métrica aditiva sai como `_lifetime`
-e `_delta`:
+A Meta só entrega o total acumulado do post. Transformar isso em "métrica por dia" é
+padronização, e por isso acontece no silver: `post_metrics_daily` tem, por foto, o total
+(`{m}_lifetime`) e a variação desde a foto anterior (`{m}_delta`), com as regras de
+`src/transformers/snapshots.py`:
 
 - **Primeira foto de um post:** `new_post` (publicado nas 24h anteriores) tem a vida inteira
   como delta; `pre_existing` tem histórico desconhecido e delta nulo.
@@ -308,17 +310,13 @@ e `_delta`:
 - **`reach_delta` é alcance novo**, não alcance do dia. E `reach` subestima muito posts
   antigos: a métrica única é recente na API.
 
-**`page_daily_metrics`** — página × `metric_date`, só o período `day`. `fan_adds_unpaid` é a
-única separação orgânico × pago que a fonte entrega. Seguidores entram pela foto do mesmo dia.
+As colunas de controle (`baseline_kind`, `gap_days`, `hours_since_prev`, `snapshot_at`) ficam
+aqui, para auditoria. A gold não as expõe.
 
-**Os dois fatos nunca se somam nem se cruzam.** O total da página inclui anúncios e conteúdo
-fora do feed de posts.
+### Gold
 
-### Conservação
-
-Duas garantias em `tests/transformers/facebook_organic/test_conservation.py`: cada foto do
-silver vira uma linha do gold com o mesmo total; e, por post e métrica, a foto inicial (se
-`pre_existing`) mais a soma dos deltas é igual ao total da última foto.
+A fatia `facebook` da [gold orgânica](#gold-orgânica-goldorganic). Métricas **totais**: num post
+impulsionado, incluem a distribuição paga.
 
 ## Instagram orgânico (`instagram_organic`)
 
@@ -370,7 +368,7 @@ O `user_insights` descarta linhas sem `date` — o primeiro sync traz linhas vaz
 | `account_insights_daily` | conta × `metric_date` | `user_insights` |
 | `follower_demographics_snapshot` | conta × `snapshot_date` × `breakdown` × valor | `user_lifetime_insights`; só no silver |
 | `media` | mídia | última foto de `media`, com `format` (`reel`, `carousel`, `image`, `video`) |
-| `media_insights_snapshot` | mídia × `snapshot_date` | `media_insights` + `like_count`/`comments_count` de `media` |
+| `media_metrics_daily` | mídia × `snapshot_date` | série diária: `media_insights` + `like_count`/`comments_count` de `media`, total e delta |
 | `stories` | story | `stories` + `story_insights`, última leitura |
 
 - **`metric_date` é a própria data do `date`, no Pacífico — sem −1.** No Instagram o `date` é a
@@ -382,19 +380,81 @@ O `user_insights` descarta linhas sem `date` — o primeiro sync traz linhas vaz
 - **Story sem insights sobrevive.** A Meta devolve erro para métrica de story com valor menor
   que 5; `hours_live_at_last_read` diz com que idade o story foi lido pela última vez.
 
+- **Série diária de mídia no silver**, como no Facebook: `media_metrics_daily` com total e delta
+  pelas regras de `snapshots.py`. Delta negativo é frequente e real no Instagram: comentário
+  apagado, descurtida, salvamento desfeito, `reach` estimado revisado para baixo.
+
 ### Gold
 
-- **`media_daily_metrics`** — mídia × `snapshot_date`, `_lifetime` e `_delta` com as regras de
-  `snapshots.py`. Orgânico. Delta negativo é frequente e real: comentário apagado, descurtida,
-  salvamento desfeito, `reach` estimado revisado para baixo.
-- **`account_daily_metrics`** — conta × `metric_date`: `reach` (total, inclui anúncios),
-  `reach_week` e `reach_days_28` (janelas móveis, não somam), `new_followers`, `is_partial` e os
-  totais da foto do mesmo dia.
-- **`story_metrics`** — um story por linha, com os números da última leitura.
+A fatia `instagram` da [gold orgânica](#gold-orgânica-goldorganic). Métricas de conteúdo
+**orgânicas**; da conta, **totais** (o alcance inclui anúncios).
 
-O alcance da conta nunca se soma ao dos posts: é único e inclui anúncios.
+## Gold orgânica (`gold/organic/`)
+
+A camada de consumo das plataformas orgânicas. Facebook e Instagram entregam **as mesmas
+tabelas**, com nomes de negócio, e cada rede grava só a sua partição (`platform`) com
+`replaceWhere` — uma não apaga a outra. O contrato (nomes, ordem e tipos) mora em
+`src/transformers/organic_gold.py`; a mecânica de construção (placar acumulado, baseline, horas
+entre fotos) fica no silver.
+
+| Tabela | Uma linha é | Para quê |
+|---|---|---|
+| `content` | um post (dimensão) | atributos: conta, formato, publicação, link, legenda, `last_seen_date` |
+| `content_daily` | um post num dia | o que aconteceu no dia e o total até o dia |
+| `account_daily` | uma página ou conta num dia | alcance, visualizações, novos seguidores, total de seguidores |
+| `stories` | um story | números da última leitura antes de expirar (só Instagram) |
+
+### `content_daily`: cada métrica em par
+
+| Coluna | Significado |
+|---|---|
+| `views`, `likes`, `comments`, `shares`, `saves`, `clicks`, `follows`, `profile_visits` | o que aconteceu **no dia** |
+| `reach_new` | pessoas alcançadas pela primeira vez no dia — não o alcance do dia |
+| `{métrica}_total` | total acumulado **até o dia** |
+| `is_first_tracked_day` | primeiro dia fotografado do post |
+| `days_covered` | quantos dias o número do dia cobre (mais de 1 depois de um sync que faltou) |
+| `metrics_scope` | `organic` (Instagram) ou `total` (Facebook) |
+
+- **Atividade de um período:** some as colunas do dia.
+- **Total atual de um post:** a coluna `_total` na última `date` **daquele post** — não o
+  `max(date)` da tabela: um post apagado para de receber fotos.
+- **No primeiro dia fotografado de um post antigo, o número do dia é nulo**: o total é
+  conhecido, o que aconteceu naquele dia não. Por isso a soma dos dias só conta a atividade
+  desde o início do acompanhamento.
+- **Nulo não é zero.** A rede não tem a métrica (Facebook sem comentários por post; Instagram
+  sem cliques), o conector não a pede para o tipo (carrossel sem `views`) ou o campo ainda não
+  existia numa foto antiga.
+
+| Métrica | Facebook (`total`) | Instagram (`organic`) |
+|---|---|---|
+| `views` | `post_media_view` | `views` (só reels) |
+| `reach` | `post_total_media_view_unique` | `reach` |
+| `likes` | soma de todas as reações | `like_count` |
+| `comments` | — | `comments_count` |
+| `shares` | `shares` | `shares` |
+| `saves` | — | `saved` |
+| `clicks` | soma de `post_clicks_by_type` | — |
+| `follows`, `profile_visits` | — | `follows`, `profile_visits` (sem reels) |
+
+O detalhe por tipo de reação (Facebook) e o tempo de exibição de reels (Instagram) ficam no
+silver.
+
+### `account_daily`
+
+`metrics_scope` é sempre `total`: o alcance e as visualizações da página e da conta incluem
+anúncios. `reach` é único — nunca é a soma do alcance dos posts. No Facebook os dados chegam
+com uns 2 dias de atraso e `new_followers_organic` é a única separação orgânico × pago; no
+Instagram o último dia vem com `is_partial = true` até a releitura seguinte.
+
+### O que não fazer
+
+- Somar `organic` com `total`.
+- Somar alcance de posts ou de dias como se fosse gente.
+- Somar `account_daily` com `content_daily`.
 
 ### Conservação
 
-`tests/transformers/instagram_organic/test_conservation.py`, com as mesmas duas garantias do
-`facebook_organic`, por mídia.
+`tests/transformers/{plataforma}/test_conservation.py`, sobre a fatia de cada rede: cada linha
+da série do silver vira uma linha do `content_daily`; por post e métrica, o total do primeiro
+dia (quando o número do dia é desconhecido) mais a soma dos dias é igual ao total do último
+dia; e todo post do `content_daily` está no `content`.

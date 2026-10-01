@@ -1,84 +1,80 @@
-"""Invariantes de conservação do facebook_organic, sobre as tabelas já materializadas.
+"""Invariantes de conservação da fatia `facebook` da gold orgânica, sobre as tabelas já
+materializadas. Rode o medallion antes.
 
-Rode o medallion antes. Duas garantias:
+1. **A gold não come nem duplica dia.** Cada linha da série do silver vira exatamente uma linha
+   do `content_daily`, com o mesmo total.
+2. **O dia reconstrói o total.** Para cada post e métrica: total do primeiro dia fotografado
+   (quando o número do dia é desconhecido) + Σ números do dia = total do último dia.
+3. **Todo post do `content_daily` está no `content`** — a dimensão cobre o fato.
 
-1. **O gold não come nem duplica foto.** Cada foto de post do silver vira exatamente uma
-   linha do gold, com o mesmo total acumulado.
-2. **O delta reconstrói o total.** Para cada post e métrica aditiva: total da foto inicial
-   (se `pre_existing`) + Σ delta = total da última foto. Se divergir, o delta está pulando
-   ou repetindo variação.
-
-A soma de métrica entre página e posts não é comparada: são fatos que nunca se somam.
+Alcance da conta e dos posts não se comparam: o da conta é único e inclui anúncios.
 """
 import pytest
-from pyspark.sql.functions import (
-    col,
-    count,
-    first,
-    last,
-    sum as sum_,
-    when,
-)
+from pyspark.sql.functions import col, first, last, sum as sum_, when
 from pyspark.sql.window import Window
 
 from src.io.reader import read_delta
-from src.transformers.facebook_organic.transforms.gold.post_daily_metrics import (
-    ADDITIVE_METRICS,
-)
+from src.transformers.organic_gold import CONTENT_METRICS, daily_name, total_name
 
-SILVER_METRICS = ("media_views", "reach", "clicks", "reactions_total", "shares")
+PLATFORM = "facebook"
+SERIES = "facebook_organic/post_metrics_daily"
 
 
 def _read(spark, layer, table):
     try:
-        return read_delta(spark, layer, f"facebook_organic/{table}")
+        df = read_delta(spark, layer, table)
     except Exception as exc:
         pytest.skip(f"{layer}/{table} não materializado: {exc}")
+    return df
 
 
-def test_gold_keeps_every_silver_snapshot(spark):
-    silver = _read(spark, "silver", "post_insights_snapshot")
-    gold = _read(spark, "gold", "post_daily_metrics")
-
-    def totals(df):
-        return df.agg(
-            count("*").alias("rows"),
-            *(sum_(f"{metric}_lifetime").alias(metric) for metric in SILVER_METRICS),
-        ).collect()[0].asDict()
-
-    assert totals(gold) == totals(silver)
+def _gold(spark, table):
+    return _read(spark, "gold", f"organic/{table}").filter(col("platform") == PLATFORM)
 
 
-def test_deltas_rebuild_lifetime_per_post(spark):
-    gold = _read(spark, "gold", "post_daily_metrics")
-    window = Window.partitionBy("post_id").orderBy("snapshot_date").rowsBetween(
+def test_gold_keeps_every_silver_day(spark):
+    silver = _read(spark, "silver", SERIES)
+    gold = _gold(spark, "content_daily")
+
+    assert gold.count() == silver.count()
+
+
+def test_daily_numbers_rebuild_total_per_post(spark):
+    gold = _gold(spark, "content_daily")
+    window = Window.partitionBy("content_id").orderBy("date").rowsBetween(
         Window.unboundedPreceding, Window.unboundedFollowing
     )
 
-    for metric in ADDITIVE_METRICS:
-        lifetime = col(f"{metric}_lifetime")
+    for metric in CONTENT_METRICS:
+        daily, total = col(daily_name(metric)), col(total_name(metric))
         per_post = (
-            gold.withColumn("_first", first(lifetime).over(window))
-            .withColumn("_last", last(lifetime).over(window))
-            .withColumn("_first_kind", first("baseline_kind").over(window))
-            .groupBy("post_id")
+            gold.withColumn("_first_total", first(total).over(window))
+            .withColumn("_first_daily", first(daily).over(window))
+            .withColumn("_last_total", last(total).over(window))
+            .groupBy("content_id")
             .agg(
-                first("_first").alias("first"),
-                first("_last").alias("last"),
-                first("_first_kind").alias("first_kind"),
-                sum_(col(f"{metric}_delta")).alias("deltas"),
-                sum_(lifetime.isNull().cast("int")).alias("null_lifetimes"),
+                first("_first_total").alias("first_total"),
+                first("_first_daily").alias("first_daily"),
+                first("_last_total").alias("last_total"),
+                sum_(daily).alias("dailies"),
+                sum_(total.isNull().cast("int")).alias("null_totals"),
             )
-            # Métrica que ainda não existia em alguma foto (ex.: `shares` antes da seleção de
-            # campos) não tem série completa para conferir.
-            .filter(col("null_lifetimes") == 0)
+            # Métrica que a rede não tem, ou que não existia numa foto antiga, não tem série
+            # completa para conferir.
+            .filter(col("null_totals") == 0)
         )
-        rebuilt = when(col("first_kind") == "pre_existing", col("first")).otherwise(0) + (
-            when(col("deltas").isNull(), 0).otherwise(col("deltas"))
-        )
-        broken = per_post.filter(rebuilt != col("last"))
+        baseline = when(col("first_daily").isNull(), col("first_total")).otherwise(0)
+        rebuilt = baseline + when(col("dailies").isNull(), 0).otherwise(col("dailies"))
+        broken = per_post.filter(rebuilt != col("last_total"))
 
         assert broken.isEmpty(), (
-            f"{metric}: delta não reconstrói o total em {broken.count()} posts — "
+            f"{metric}: os números do dia não reconstroem o total em {broken.count()} posts — "
             f"ex.: {broken.limit(3).collect()}"
         )
+
+
+def test_every_daily_post_is_in_content(spark):
+    daily = _gold(spark, "content_daily").select("content_id").distinct()
+    content = _gold(spark, "content").select("content_id")
+
+    assert daily.join(content, "content_id", "left_anti").isEmpty()

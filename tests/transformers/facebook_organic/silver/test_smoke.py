@@ -9,7 +9,7 @@ EXPECTED_COLUMNS = {
     "pages": ("page_id", "page_name"),
     "page_followers_snapshot": ("page_id", "snapshot_date", "followers_count"),
     "posts": ("post_id", "page_id", "created_at", "media_type", "last_seen_date"),
-    "post_insights_snapshot": ("post_id", "snapshot_date", "media_views_lifetime"),
+    "post_metrics_daily": ("post_id", "snapshot_date", "media_views_lifetime", "media_views_delta"),
     "page_insights_daily": ("page_id", "metric", "period", "metric_date", "value"),
 }
 

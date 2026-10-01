@@ -8,7 +8,7 @@ from . import (
     accounts,
     follower_demographics_snapshot,
     media,
-    media_insights_snapshot,
+    media_metrics_daily,
     stories,
 )
 
@@ -22,6 +22,6 @@ SILVER_TRANSFORMS: dict[str, SilverTransform] = {
     "account_insights_daily": account_insights_daily.transform,
     "follower_demographics_snapshot": follower_demographics_snapshot.transform,
     "media": media.transform,
-    "media_insights_snapshot": media_insights_snapshot.transform,
+    "media_metrics_daily": media_metrics_daily.transform,
     "stories": stories.transform,
 }

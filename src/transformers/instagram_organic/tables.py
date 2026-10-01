@@ -22,8 +22,12 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
+from src.transformers.organic_gold import GOLD_PREFIX
+
 RAW_PREFIX = "airbyte/instagram_organic"
 PLATFORM = "instagram_organic"
+# Valor da coluna `platform` nas tabelas da gold orgânica.
+GOLD_PLATFORM = "instagram"
 
 # O `date` do `user_insights` é a meia-noite do Pacífico que *inicia* o dia medido — o
 # contrário do `end_time` das páginas do Facebook. Conferido contra o Business Suite.
@@ -178,7 +182,8 @@ class GoldFactConfig:
 
     @property
     def gold_table_name(self) -> str:
-        return f"{PLATFORM}/{self.name}"
+        """A gold orgânica é compartilhada com o Facebook: `gold/organic/{tabela}`."""
+        return f"{GOLD_PREFIX}/{self.name}"
 
     @property
     def silver_source_paths(self) -> list[str]:
@@ -221,22 +226,18 @@ SILVER_TABLES: tuple[SilverTableConfig, ...] = (
         name="follower_demographics_snapshot", bronze_sources=("user_lifetime_insights",)
     ),
     SilverTableConfig(name="media", bronze_sources=("media",)),
-    SilverTableConfig(
-        name="media_insights_snapshot", bronze_sources=("media_insights", "media")
-    ),
+    SilverTableConfig(name="media_metrics_daily", bronze_sources=("media_insights", "media")),
     SilverTableConfig(name="stories", bronze_sources=("stories", "story_insights")),
 )
 
 GOLD_FACTS: tuple[GoldFactConfig, ...] = (
+    GoldFactConfig(name="content", silver_sources=("media", "accounts")),
+    GoldFactConfig(name="content_daily", silver_sources=("media_metrics_daily",)),
     GoldFactConfig(
-        name="media_daily_metrics",
-        silver_sources=("media_insights_snapshot", "media", "accounts"),
-    ),
-    GoldFactConfig(
-        name="account_daily_metrics",
+        name="account_daily",
         silver_sources=("account_insights_daily", "account_followers_snapshot", "accounts"),
     ),
-    GoldFactConfig(name="story_metrics", silver_sources=("stories", "accounts")),
+    GoldFactConfig(name="stories", silver_sources=("stories", "accounts")),
 )
 
 # Métricas de mídia do `/insights`: nome no raw → coluna `_lifetime`. O conector pede um

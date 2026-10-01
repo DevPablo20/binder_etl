@@ -1,16 +1,11 @@
-"""Smoke test: gold do instagram_organic lê o silver Delta e escreve os três fatos."""
+"""Smoke test: gold do instagram_organic lê o silver Delta e escreve a sua fatia da gold orgânica."""
 from pyspark.sql.functions import count
 from pyspark.sql.utils import AnalysisException
 
 from src.io.reader import read_delta
 from src.transformers.instagram_organic.gold import InstagramOrganicGoldTransformer
-from src.transformers.instagram_organic.tables import GOLD_FACTS
-
-GRAIN = {
-    "media_daily_metrics": ("media_id", "snapshot_date"),
-    "account_daily_metrics": ("business_account_id", "metric_date"),
-    "story_metrics": ("story_id",),
-}
+from src.transformers.instagram_organic.tables import GOLD_FACTS, GOLD_PLATFORM
+from src.transformers.organic_gold import GRAIN_BY_TABLE
 
 
 def _silver_available(spark, table_path: str) -> bool:
@@ -45,8 +40,10 @@ def test_gold_instagram_organic_writes_facts_at_their_grain(spark):
     InstagramOrganicGoldTransformer(spark).run()
 
     for fact in facts:
-        df = read_delta(spark, "gold", fact.gold_table_name)
+        df = read_delta(spark, "gold", fact.gold_table_name).filter(
+            f"platform = '{GOLD_PLATFORM}'"
+        )
         assert not df.isEmpty()
-        grain = GRAIN[fact.name]
+        grain = GRAIN_BY_TABLE[fact.name]
         duplicated = df.groupBy(*grain).agg(count("*").alias("n")).filter("n > 1")
         assert duplicated.isEmpty(), f"{fact.name} fora do grão {grain}"

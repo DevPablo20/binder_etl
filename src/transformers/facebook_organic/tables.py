@@ -17,8 +17,12 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
+from src.transformers.organic_gold import GOLD_PREFIX
+
 RAW_PREFIX = "airbyte/facebook_organic"
 PLATFORM = "facebook_organic"
+# Valor da coluna `platform` nas tabelas da gold orgânica.
+GOLD_PLATFORM = "facebook"
 
 # O `end_time` dos insights de período `day` é a meia-noite do Pacífico que *encerra* o dia
 # medido — confirmado contra o Business Suite.
@@ -149,7 +153,7 @@ class SilverTableConfig:
     """Tabela silver montada a partir de um ou mais streams bronze.
 
     Ao contrário do TikTok, o silver aqui não é 1:1 com o bronze: `page` rende a dimensão e
-    a série de seguidores, e `post_insights_snapshot` junta `post_insights` com o `shares` de
+    a série de seguidores, e `post_metrics_daily` junta `post_insights` com o `shares` de
     `post`.
     """
 
@@ -168,7 +172,8 @@ class GoldFactConfig:
 
     @property
     def gold_table_name(self) -> str:
-        return f"{PLATFORM}/{self.name}"
+        """A gold orgânica é compartilhada com o Instagram: `gold/organic/{tabela}`."""
+        return f"{GOLD_PREFIX}/{self.name}"
 
     @property
     def silver_source_paths(self) -> list[str]:
@@ -186,19 +191,15 @@ SILVER_TABLES: tuple[SilverTableConfig, ...] = (
     SilverTableConfig(name="pages", bronze_sources=("page",)),
     SilverTableConfig(name="page_followers_snapshot", bronze_sources=("page",)),
     SilverTableConfig(name="posts", bronze_sources=("post",)),
-    SilverTableConfig(
-        name="post_insights_snapshot", bronze_sources=("post_insights", "post")
-    ),
+    SilverTableConfig(name="post_metrics_daily", bronze_sources=("post_insights", "post")),
     SilverTableConfig(name="page_insights_daily", bronze_sources=("page_insights",)),
 )
 
 GOLD_FACTS: tuple[GoldFactConfig, ...] = (
+    GoldFactConfig(name="content", silver_sources=("posts", "pages")),
+    GoldFactConfig(name="content_daily", silver_sources=("post_metrics_daily",)),
     GoldFactConfig(
-        name="post_daily_metrics",
-        silver_sources=("post_insights_snapshot", "posts", "pages"),
-    ),
-    GoldFactConfig(
-        name="page_daily_metrics",
+        name="account_daily",
         silver_sources=("page_insights_daily", "page_followers_snapshot", "pages"),
     ),
 )

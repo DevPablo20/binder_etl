@@ -90,6 +90,8 @@ Ensure Java 17 is on your `PATH` (`java -version`).
 
 Follow [airbyte/README.md](airbyte/README.md) to install `abctl`, render secrets from `.env`, and configure the TikTok → MinIO connection.
 
+The install command there reads `AIRBYTE_PORT`, `AIRBYTE_INSECURE_COOKIES` and `AIRBYTE_HOST` from `.env` — use it as written. Airbyte is served over plain HTTP, so omitting `--insecure-cookies` produces a login that fails with correct credentials and no error message. Re-running the install is a `helm upgrade` and preserves connections and sync state; see [Re-installing / changing flags without losing data](airbyte/README.md#re-installing--changing-flags-without-losing-data).
+
 MVP: trigger syncs manually in the Airbyte UI. The Airflow `sync_raw` task is a placeholder.
 
 ### 5. Run the pipeline
@@ -117,7 +119,7 @@ Enable the `tiktok_daily` DAG in the Airflow UI to orchestrate the medallion cha
 
 ### 6. Catalog API
 
-The `catalog-api` service starts with `docker compose up` and stays available for backend Bridge discovery on port **8002** (avoids Airbyte `abctl` on 8000). After silver tables exist in MinIO:
+The `catalog-api` service starts with `docker compose up` and stays available for backend Bridge discovery on port **8002** (avoids `AIRBYTE_PORT`, `8080` here, and abctl's own default of `8000`). After silver tables exist in MinIO:
 
 ```bash
 curl http://localhost:8002/catalog/tiktok

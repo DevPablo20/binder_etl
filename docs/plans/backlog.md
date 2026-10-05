@@ -5,6 +5,12 @@ Ideias ainda sem escopo. Quando uma delas for escopada, vira um arquivo de inici
 
 - **Trigger automático do Airbyte no Airflow.** Hoje o sync é manual via `abctl`; a tarefa
   `sync_raw` do DAG é um placeholder.
+- **Destravar o `abctl local install` sem root.** O install aborta no pre-check de versão do
+  Postgres porque não consegue ler `pgdata/PG_VERSION` (`drwx------`, uid 70) — detalhes e
+  workaround em [airbyte/README.md](../../airbyte/README.md#known-blocker-abctl-local-install-fails-on-pgdata-permissions).
+  O workaround via `sudo -E env HOME=...` está documentado mas **não foi executado de ponta a
+  ponta**; falta validar, e decidir se a correção certa é rodar como root, ajustar o
+  `securityContext` do chart ou mover a config para patch de ConfigMap como fluxo normal.
 - **Segundo fato para segmentações** (age, gender, region). Grão maior que ad × dia e
   mecanismo diferente do enriquecimento — não cabe no gold atual.
 - **Retenção ou compactação do raw** quando o volume justificar. O bronze já acumula, então o

@@ -50,14 +50,18 @@ Configure via `.env` (copy from `.env.example`):
 | `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | MinIO credentials |
 | `AIRFLOW_FERNET_KEY` | Encrypt Airflow connections |
 | `AIRFLOW_ADMIN_USER` / `AIRFLOW_ADMIN_PASSWORD` | Airflow UI login |
+| `AIRBYTE_PORT` | Host port for the Airbyte ingress (default `8080`) |
+| `AIRBYTE_INSECURE_COOKIES` | Non-empty ⇒ `abctl local install --insecure-cookies`. Required: Airbyte is served over plain HTTP, and a `Secure` session cookie is dropped by the browser, breaking login with no error. Empty only if TLS terminates in front |
+| `AIRBYTE_HOST` | Ingress hostname; empty ⇒ wildcard ingress, needed to reach Airbyte by IP over the VPN. Setting it makes access by IP return 404 |
 | `ETL_STRICT` | `true` = fail on missing/empty sources; default warns and skips |
-| `CATALOG_API_PORT` | Host port for catalog FastAPI (default `8002`; avoid `8000` — Airbyte abctl) |
+| `CATALOG_API_PORT` | Host port for catalog FastAPI (default `8002`; avoid `AIRBYTE_PORT` — `8080` here — and abctl's default `8000`) |
 
 ## Practices
 
 ### Extract (Airbyte)
 
 - Keep Airbyte **outside** docker-compose — run `abctl` on the host.
+- Always install with the flags built from `.env` (`--insecure-cookies`, `--host`) — see [airbyte/README.md](../airbyte/README.md#access-over-vpn---insecure-cookies). Re-running the install is a `helm upgrade` and keeps connections and sync state; `--persisted` on `uninstall` destroys them.
 - Land data to `raw/airbyte/{platform}/{stream}/` as Parquet.
 - MVP: manual sync; DAG `sync_raw` is a placeholder until `AirbyteTriggerSyncOperator` is wired.
 

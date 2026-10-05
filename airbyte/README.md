@@ -46,10 +46,19 @@ The rendered file stays in `/tmp` and is not committed.
 With `.env` loaded (or in the same shell session as step 2):
 
 ```bash
-abctl local install --secret /tmp/airbyte-secrets.yaml --port ${AIRBYTE_PORT:-8080}
+abctl local install \
+  --secret /tmp/airbyte-secrets.yaml \
+  --port "${AIRBYTE_PORT:-8080}" \
+  ${AIRBYTE_INSECURE_COOKIES:+--insecure-cookies} \
+  ${AIRBYTE_HOST:+--host "$AIRBYTE_HOST"}
 ```
 
-Installation may take several minutes. Airbyte UI: **http://localhost:** + `AIRBYTE_PORT` (default `8080`). Use the email from first-time setup and `AIRBYTE_ADMIN_PASSWORD` from `.env`.
+Do not drop the last two lines. They are driven by `.env` and both matter for remote access —
+see [Access over VPN](#access-over-vpn---insecure-cookies) before changing either.
+
+Installation may take several minutes. Airbyte UI: `http://localhost:${AIRBYTE_PORT}` (default
+**http://localhost:8080**). Use the email from first-time setup and `AIRBYTE_ADMIN_PASSWORD`
+from `.env`.
 
 ### Quick command summary
 
@@ -58,8 +67,40 @@ curl -LsfS https://get.airbyte.com | bash -
 set -a && . ./.env && set +a \
   && envsubst '$AIRBYTE_ADMIN_PASSWORD,$AIRBYTE_CLIENT_ID,$AIRBYTE_CLIENT_SECRET' \
     < airbyte/secrets.yaml > /tmp/airbyte-secrets.yaml
-abctl local install --secret /tmp/airbyte-secrets.yaml --port ${AIRBYTE_PORT:-8080}
+abctl local install \
+  --secret /tmp/airbyte-secrets.yaml \
+  --port "${AIRBYTE_PORT:-8080}" \
+  ${AIRBYTE_INSECURE_COOKIES:+--insecure-cookies} \
+  ${AIRBYTE_HOST:+--host "$AIRBYTE_HOST"}
 ```
+
+## Access over VPN (`--insecure-cookies`)
+
+Airbyte here is served over **plain HTTP** — there is no TLS in front of it. Airbyte marks its
+session cookie `Secure` by default (`AB_COOKIE_SECURE=true`), and a `Secure` cookie is dropped
+by the browser on an HTTP origin. The result is a login that **fails with the correct
+credentials and shows no error** — you just land back on the login screen.
+
+`--insecure-cookies` renders `global.auth.security.cookieSecureSetting: false`, which becomes
+`AB_COOKIE_SECURE: "false"` in the `airbyte-abctl-airbyte-env` ConfigMap. Only the
+`airbyte-abctl-server` deployment consumes it.
+
+Driven by `AIRBYTE_INSECURE_COOKIES` in `.env` (presence-based: any non-empty value passes the
+flag). Drop it **only** if you terminate TLS in front of Airbyte.
+
+### `AIRBYTE_HOST`
+
+Leave it **empty**. An empty value means a wildcard ingress that answers on any hostname, which
+is what lets you reach Airbyte by IP over the VPN. Setting `--host` restricts the ingress to
+that single name and access by IP starts returning **404**.
+
+### Checking the live value
+
+```bash
+docker exec airbyte-abctl-control-plane kubectl --kubeconfig /etc/kubernetes/admin.conf exec -n airbyte-abctl deploy/airbyte-abctl-server -- printenv AB_COOKIE_SECURE
+```
+
+Expected: `false`.
 
 ## Useful abctl commands
 
@@ -67,7 +108,98 @@ abctl local install --secret /tmp/airbyte-secrets.yaml --port ${AIRBYTE_PORT:-80
 |---------|-------------|
 | `abctl local status` | Cluster and Airbyte status |
 | `abctl local credentials` | Current client_id, client_secret, password |
-| `abctl local uninstall` | Stop and remove (data retained) |
+| `abctl local uninstall` | Remove the Helm releases; **persisted data retained** |
+| `abctl local uninstall --persisted` | ⚠️ Also **deletes all persisted data** — connections, sources, destinations, sync state |
+
+## Re-installing / changing flags without losing data
+
+`abctl local install` is a `helm upgrade` against the existing kind cluster — it does **not**
+recreate the cluster and does **not** touch the volumes. You do not need to uninstall first;
+just re-run the install command with the flags you want.
+
+Data lives in two PVs, both `reclaimPolicy: Retain`, hostPath inside the kind container
+`airbyte-abctl-control-plane`:
+
+| PV | Contents |
+|----|----------|
+| `airbyte-volume-db` | Postgres `db-airbyte` (user `airbyte`) — connections, sources, destinations, sync state, job history |
+| `airbyte-local-pv` | workload/log storage |
+
+Back up before any re-install:
+
+```bash
+docker exec airbyte-abctl-control-plane kubectl --kubeconfig /etc/kubernetes/admin.conf exec -n airbyte-abctl airbyte-db-0 -- pg_dump -U airbyte -d db-airbyte > ~/airbyte-backup-$(date +%F).sql
+```
+
+A re-install restarts every pod, so do it with no sync running:
+
+```bash
+docker exec airbyte-abctl-control-plane kubectl --kubeconfig /etc/kubernetes/admin.conf exec -n airbyte-abctl airbyte-db-0 -- psql -U airbyte -d db-airbyte -t -c "select id, scope, status from jobs where status in ('running','pending');"
+```
+
+**Never** `docker rm airbyte-abctl-control-plane` or `docker volume prune` to "reset" Airbyte —
+the PVs are hostPaths inside that container and die with it.
+
+### Known blocker: `abctl local install` fails on `pgdata` permissions
+
+On this host every `abctl local install` (abctl v0.30.4) aborts **before** the Helm upgrade with:
+
+```
+ERROR  failed to determine if any previous psql version exists:
+       error reading pgdata version file: .../airbyte-volume-db/pgdata/PG_VERSION: permission denied
+```
+
+`pgdata` is `drwx------` uid/gid `70` (the `postgres` user inside the container) while `abctl`
+runs as the host user. The check is pointless here — `PG_VERSION` is `17` and the running
+Postgres is 17.5, so no migration is pending — but it is fatal.
+
+Two things to know:
+
+- **The failure is safe.** It aborts before touching anything; pods keep their previous uptime
+  and no data is modified.
+- **The exit code lies if you wrap it.** `abctl` exits `1`, but `abctl ... ; echo $?` reports the
+  exit code of `echo`, which makes the run look successful. Check the log for `ERROR`, and
+  confirm the pods actually restarted.
+
+Workaround — run the install as root while keeping the same `HOME` so `abctl` finds its
+kubeconfig and data dir. Back up first (above) and check the output for `ERROR`: the run is
+only successful if the pods actually restarted.
+
+```bash
+sudo -E env HOME="$HOME" "$(command -v abctl)" local install \
+  --secret /tmp/airbyte-secrets.yaml \
+  --port "${AIRBYTE_PORT:-8080}" \
+  ${AIRBYTE_INSECURE_COOKIES:+--insecure-cookies} \
+  ${AIRBYTE_HOST:+--host "$AIRBYTE_HOST"}
+```
+
+Afterwards, give back ownership of the files root created — **only these paths**:
+
+```bash
+sudo chown -R "$USER:$USER" ~/.airbyte/abctl/.helmcache ~/.airbyte/abctl/.helmrepo ~/.airbyte/abctl/abctl.kubeconfig
+```
+
+⚠️ Do **not** run `sudo chown -R` on `~/.airbyte` as a whole. That would also chown `pgdata` to
+your user, and Postgres (running as uid 70) can then no longer open its own data directory — the
+database stops starting.
+
+### Changing one setting without a full re-install
+
+For a single config change, patching the ConfigMap and restarting the affected deployment is
+equivalent to the Helm-rendered value and never touches the database. Example for the cookie
+setting:
+
+```bash
+docker exec airbyte-abctl-control-plane kubectl --kubeconfig /etc/kubernetes/admin.conf patch cm airbyte-abctl-airbyte-env -n airbyte-abctl --type merge -p '{"data":{"AB_COOKIE_SECURE":"false"}}'
+```
+
+```bash
+docker exec airbyte-abctl-control-plane kubectl --kubeconfig /etc/kubernetes/admin.conf rollout restart deploy/airbyte-abctl-server -n airbyte-abctl
+```
+
+The patch survives pod restarts, host reboots and Docker restarts (it is in the kind cluster's
+etcd), but a **successful** `abctl local install` re-renders the ConfigMap from the chart and
+reverts it. That is why the flags belong in `.env` and in the documented install command above.
 
 ## TikTok → MinIO connection (MVP)
 

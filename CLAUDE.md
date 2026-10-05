@@ -102,6 +102,12 @@ sumiu. Deletados chegam explicitamente com `*_STATUS_DELETE` em `secondary_statu
   tabela inteira apagaria a outra rede. A gold é de consumo — a mecânica do delta fica no silver.
 - **Conexões do Airbyte sempre em Append, nunca Overwrite.** Overwrite apaga os arquivos
   anteriores do stream a cada sync; o bronze só acumula o que ainda está no raw quando roda.
+- **Instalar o Airbyte com as flags montadas do `.env`, nunca o `abctl local install` cru.**
+  Sem `--insecure-cookies` o login quebra: o Airbyte é servido em HTTP puro e o navegador
+  descarta o cookie de sessão marcado `Secure` — a credencial correta falha sem mensagem de
+  erro. `AIRBYTE_HOST` vazio mantém o ingress curinga, necessário para acessar por IP na VPN.
+  Reinstalar é `helm upgrade` e preserva conexões e estado; `uninstall --persisted` destrói.
+  Comando e detalhes em [airbyte/README.md](airbyte/README.md).
 - A FastAPI de catálogo precisa inicializar o `SparkSession` no lifespan **antes** de aceitar
   tráfego. Trabalho Spark/MinIO é síncrono — rode fora do event loop.
 

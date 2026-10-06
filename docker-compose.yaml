@@ -13,7 +13,12 @@ x-airflow-common: &airflow-common
     MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
     MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     MINIO_ENDPOINT: http://minio:9000
-    ETL_STRICT: ${ETL_STRICT:-false}
+    # Orquestração não degrada em silêncio: silver faltando ou vazio falha a tarefa em vez
+    # de pular o fato e terminar verde. Fora do DAG (CLI, testes) o default segue tolerante.
+    ETL_STRICT: ${ETL_STRICT_AIRFLOW:-true}
+    AIRBYTE_API_URL: ${AIRBYTE_API_URL:-}
+    AIRBYTE_CLIENT_ID: ${AIRBYTE_CLIENT_ID:-}
+    AIRBYTE_CLIENT_SECRET: ${AIRBYTE_CLIENT_SECRET:-}
   volumes:
     - ./dags:/opt/airflow/dags
     - ./src:/opt/binder_etl/src
@@ -89,6 +94,13 @@ services:
       - -c
       - |
         airflow db migrate
+        # Pools de concorrência. `airflow pools set` é idempotente, então instalação nova
+        # nasce com eles e reinstalação não duplica.
+        # A restrição da máquina é CPU: sync do Airbyte é trabalho de rede e rende em
+        # paralelo, mas o medallion roda `local[*]` e dois ao mesmo tempo não dividem
+        # quatro núcleos — além de disputarem a escrita das mesmas tabelas de gold/organic/.
+        airflow pools set airbyte_sync 2 "Syncs simultaneos do Airbyte"
+        airflow pools set spark_medallion 1 "Medallion serializado: um por vez, toda plataforma"
         airflow users create \
           --username "$${AIRFLOW_ADMIN_USER}" \
           --password "$${AIRFLOW_ADMIN_PASSWORD}" \
@@ -177,6 +189,8 @@ services:
     volumes:
       - ./src:/opt/binder_etl/src
       - ./dev:/opt/binder_etl/dev
+      # A suíte roda aqui: é o único serviço com Spark, Delta e os testes montados.
+      - ./tests:/opt/binder_etl/tests
       - spark-ivy-cache:/root/.ivy2
     depends_on:
       minio:

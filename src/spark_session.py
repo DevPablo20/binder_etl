@@ -17,6 +17,9 @@ def get_spark_session(
         SparkSession.builder.appName(app_name)
         .master(master)
         .config("spark.jars.packages", SPARK_JARS_PACKAGES)
+        # Vale aqui, e não só no `spark-submit`: o PySpark passa este valor ao launcher
+        # antes de subir a JVM. Sem ele, o heap é o default de 1 GiB.
+        .config("spark.driver.memory", settings.spark_driver_memory)
         # Os containers (Airflow, catalog-api) rodam em UTC; a máquina de dev, não. Sem fixar,
         # `to_date`, `from_utc_timestamp` e casts de string para timestamp dão resultados
         # diferentes conforme onde o pipeline roda.

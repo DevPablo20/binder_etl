@@ -1,47 +1,52 @@
-from datetime import datetime
+"""Facebook orgânico: extração de todas as páginas em paralelo e **um** medallion depois.
 
+O fan-out é da extração, não do medallion. Cada página escreve em
+`raw/airbyte/facebook_organic/{page_id}/{stream}` e o transformer lê com curinga
+(`facebook_organic/*/{stream}`), então um medallion já consolida todas as páginas numa
+passada. Um medallion por página reprocessaria todas as páginas de qualquer forma e N runs
+disputariam a partição `platform='facebook'` da gold compartilhada.
+
+As conexões não estão escritas aqui: saem da API por tag e prefixo de namespace, então página
+nova entra sem commit. O preço é a checagem de órfã — conexão `Organic` que nenhum DAG dispara
+falha o DAG.
+"""
+import pendulum
 from airflow import DAG
-from airflow.operators.bash import BashOperator
-from airflow.operators.empty import EmptyOperator
+from organic_tasks import (
+    DEFAULT_ARGS,
+    assert_no_orphan_connections,
+    chain_medallion,
+    discover_facebook_connections,
+    require_any_fresh_extraction,
+    trigger_sync,
+    wait_for_sync,
+)
 
-PIPELINE_CMD = "python -m src.pipelines.run {layer} facebook_organic"
+PLATFORM = "facebook_organic"
 
-default_args = {
-    "owner": "binder",
-    "depends_on_past": False,
-    "retries": 1,
-}
-
-# O Airbyte sincroniza às 01:00 de São Paulo (04:00 UTC). O DAG roda às 08:00 UTC (05:00 em
-# São Paulo), antes do corte das 06:00 que define o `snapshot_date` — a foto da madrugada
-# fecha o dia anterior.
+# 01:00 São Paulo: antes do corte das 06:00 que define o `snapshot_date`, então a foto fecha
+# o dia anterior. Escalonado uma hora antes do Instagram — as duas redes escrevem as mesmas
+# tabelas de `gold/organic/`, e o pool do medallion é a rede de segurança para o retry.
 with DAG(
-    dag_id="facebook_organic_daily",
-    default_args=default_args,
-    description="Facebook Pages orgânico medallion: raw (Airbyte) → bronze → silver → gold",
-    schedule="0 8 * * *",
-    start_date=datetime(2026, 1, 1),
+    dag_id=f"{PLATFORM}_daily",
+    default_args=DEFAULT_ARGS,
+    description="Facebook Pages orgânico: dispara cada página, aguarda, monta o medallion",
+    schedule="0 1 * * *",
+    start_date=pendulum.datetime(2026, 1, 1, tz="America/Sao_Paulo"),
     catchup=False,
-    tags=["facebook_organic", "medallion"],
+    max_active_runs=1,
+    tags=[PLATFORM, "medallion", "organic"],
 ) as dag:
-    sync_raw = EmptyOperator(
-        task_id="sync_raw",
-        doc="Airbyte Facebook Pages sync to raw/airbyte/facebook_organic/{page_id}/ (cron 01:00 SP).",
-    )
+    connection_ids = discover_facebook_connections()
 
-    bronze_facebook_organic = BashOperator(
-        task_id="bronze_facebook_organic",
-        bash_command=PIPELINE_CMD.format(layer="bronze"),
-    )
+    job_ids = trigger_sync.expand(connection_id=connection_ids)
+    waits = wait_for_sync.expand(job_id=job_ids)
 
-    silver_facebook_organic = BashOperator(
-        task_id="silver_facebook_organic",
-        bash_command=PIPELINE_CMD.format(layer="silver"),
-    )
+    gate = require_any_fresh_extraction()
+    waits >> gate
 
-    gold_facebook_organic = BashOperator(
-        task_id="gold_facebook_organic",
-        bash_command=PIPELINE_CMD.format(layer="gold"),
-    )
+    chain_medallion(gate, PLATFORM)
 
-    sync_raw >> bronze_facebook_organic >> silver_facebook_organic >> gold_facebook_organic
+    # A checagem de órfã não é pré-requisito do medallion: ela denuncia conexão esquecida,
+    # não impede a gold do dia. Depende só da descoberta, que é quem já lista as conexões.
+    assert_no_orphan_connections(connection_ids)

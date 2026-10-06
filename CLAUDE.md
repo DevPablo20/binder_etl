@@ -14,11 +14,10 @@ materializa o **gold enriquecido**.
 [docs/plans/bridge-enrichment.md](docs/plans/bridge-enrichment.md). Plano único dos três
 repositórios.
 
-`facebook-organic` — conteúdo orgânico das páginas do Facebook em bronze/silver/gold, só no
-ETL, em [docs/plans/facebook-organic.md](docs/plans/facebook-organic.md).
-
-`instagram-organic` — conteúdo orgânico das contas de Instagram (posts, stories, conta) em
-bronze/silver/gold, só no ETL, em [docs/plans/instagram-organic.md](docs/plans/instagram-organic.md).
+`organic` — conteúdo orgânico de páginas do Facebook e contas de Instagram em
+bronze/silver/gold, e a orquestração que garante a gold do dia, só no ETL, em
+[docs/plans/organic.md](docs/plans/organic.md). Uma iniciativa, não duas: as duas redes
+compartilham `gold/organic/`, o `snapshots.py` e os DAGs.
 
 ## Arquitetura de enriquecimento (invariantes compartilhadas)
 
@@ -107,6 +106,21 @@ sumiu. Deletados chegam explicitamente com `*_STATUS_DELETE` em `secondary_statu
   não chega ao lake e não há como recuperar. Trocar o cron abre exatamente esse buraco — a
   troca anterior custou ~33h sem leitura. Story se compara por `hours_live_at_last_read`, não
   pelo número cru: lido com 9h, ele ainda estava acumulando.
+- **Quem dispara a extração é dono do horário.** Conexão do Airbyte que um DAG dispara fica em
+  `scheduleType: "manual"` — com o cron vivo, o disparo cai em cima do job do cron e o DAG
+  espera um job que não é o dele. "Manual" é o schedule, não o `status`: `inactive` desliga a
+  conexão até para a API.
+- **Fan-out de conexão é da extração; o medallion é um por plataforma.** O raw do Facebook é
+  por página e o transformer lê com curinga, então N syncs em paralelo e **um** medallion
+  depois. N medallions reprocessariam todas as páginas e disputariam a mesma partição da gold.
+  Medallion roda serializado (pool de um slot): `local[*]` em quatro núcleos não divide.
+- **Conexão de página nova nasce com `namespaceFormat = facebook_organic/{page_id}`.** Com o
+  namespace default os arquivos caem fora do curinga e a página desaparece do lake sem erro.
+  Conexão orgânica leva a tag `Organic` — é por ela que o DAG do Facebook descobre as páginas.
+- **Métrica de insight de conteúdo antigo é resíduo, não zero real.** Fora da janela de
+  retenção a Meta responde um número minúsculo em vez de erro, o corte não é o aniversário do
+  conteúdo e cada métrica morre numa idade diferente. Derive o horizonte por plataforma **e por
+  métrica** e marque o que está fora como não medido.
 - **Instalar o Airbyte com as flags montadas do `.env`, nunca o `abctl local install` cru.**
   Sem `--insecure-cookies` o login quebra: o Airbyte é servido em HTTP puro e o navegador
   descarta o cookie de sessão marcado `Secure` — a credencial correta falha sem mensagem de

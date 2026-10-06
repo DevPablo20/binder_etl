@@ -3,8 +3,10 @@
 Ideias ainda sem escopo. Quando uma delas for escopada, vira um arquivo de iniciativa em
 `docs/plans/` e sai daqui.
 
-- **Trigger automático do Airbyte no Airflow.** Hoje o sync é manual via `abctl`; a tarefa
-  `sync_raw` do DAG é um placeholder.
+- **Trigger automático do Airbyte nas plataformas pagas** (Kwai, Facebook Marketing, TikTok).
+  O `sync_raw` desses DAGs é um placeholder e o acoplamento com a extração é por horário. As
+  orgânicas saíram daqui: estão escopadas em
+  [organic.md](organic.md), que serve de molde quando estas entrarem.
 - **Destravar o `abctl local install` sem root.** O install aborta no pre-check de versão do
   Postgres porque não consegue ler `pgdata/PG_VERSION` (`drwx------`, uid 70) — detalhes e
   workaround em [airbyte/README.md](../../airbyte/README.md#known-blocker-abctl-local-install-fails-on-pgdata-permissions).

@@ -58,6 +58,74 @@ lake; os joins decidem se *o que chegou* sobrevive até o gold. O `LEFT JOIN` ga
 segundo, nunca o primeiro — dimensão faltando por extração incompleta aparece como `NULL`,
 não como erro.
 
+## Orquestração (Airflow × Airbyte)
+
+> **Alvo.** Desenho decidido e ainda não em produção: nos DAGs atuais o `sync_raw` é um
+> `EmptyOperator` e o acoplamento com a extração é por horário combinado. Estado em
+> [plans/organic.md](plans/organic.md).
+
+Cada extração tem um DAG, e o DAG é dono da sequência: **dispara a conexão do Airbyte, aguarda
+o job terminar, monta o medallion.** Horário combinado não é dependência — se a extração atrasa
+ou falha, um medallion agendado por relógio roda sobre o raw de ontem e **termina verde**.
+
+| DAG | Dispara | Consolida |
+|---|---|---|
+| `facebook_organic_daily` | toda conexão de página, em paralelo | `facebook_organic`, uma vez |
+| `instagram_organic_daily` | a conexão principal do Instagram | `instagram_organic` |
+| `instagram_stories_daily` | a conexão de stories | `instagram_organic` |
+
+**Disparar e aguardar são duas tarefas.** O disparo guarda o id do job; a espera lê esse id e
+faz o poll. Numa tarefa só, o retry da espera dispara um segundo sync. E o disparo pode devolver
+o job que já estava rodando — isso não é sucesso, é outra coisa para a espera tratar.
+
+**Conexão que o Airflow dispara fica em `scheduleType: "manual"`.** Com o cron vivo, as duas
+coisas competem: o Airbyte não roda dois jobs da mesma conexão ao mesmo tempo, então o disparo
+cai em cima do job do cron e o DAG espera um job que não é o dele. "Manual" é o schedule, não o
+`status` — `inactive` desliga a conexão até para disparo via API.
+
+### O fan-out é da extração, não do medallion
+
+O raw do Facebook é por página (`airbyte/facebook_organic/{page_id}/{stream}`) e o transformer
+lê com curinga (`facebook_organic/*/{stream}`): **um medallion já consolida todas as páginas.**
+Então N conexões sincronizam em paralelo e **um** medallion roda depois de todas.
+
+Um medallion por página seria errado duas vezes: cada run reprocessaria todas as páginas de
+qualquer forma, e N runs disputariam a mesma partição `platform='facebook'` da gold
+compartilhada.
+
+O Instagram é o oposto — um token vê todas as contas e o raw não tem pasta por conta, então é
+uma conexão por DAG, sem fan-out.
+
+**Página que falha não bloqueia o medallion.** O silver modela buraco explicitamente
+(`gap_days`, `hours_since_prev`): a página sem sync não ganha foto no dia, e a asserção de
+frescor diz qual ficou atrás. Bloquear o medallion por uma página penalizaria todas as outras,
+e o bronze acumula de qualquer jeito.
+
+### De onde sai a lista de conexões
+
+As conexões do Instagram são **declaradas por id**: as duas compartilham o namespace
+`instagram_organic` e nenhum metadado as separa. As de página do Facebook são **descobertas**
+pela API, por tag `Organic` mais `namespaceFormat` começando com `facebook_organic/` — página
+nova entra sem commit, e o critério é exatamente o que o curinga do transformer depende.
+
+O preço da descoberta é uma checagem: **conexão com tag `Organic` que nenhum DAG reivindica
+falha**. Sem ela, uma conexão criada no painel com o namespace errado fica invisível no lake
+para sempre, sem erro nenhum.
+
+### Concorrência: a restrição é CPU
+
+Dois pools. `airbyte_sync` limita syncs simultâneos — sync é trabalho de rede, então paralelismo
+rende, mas cada um sobe seus pods ao lado de um control plane que já ocupa 6 GiB. E
+`spark_medallion` com **um slot**, serializando o medallion de todas as plataformas: com
+`master="local[*]"` em quatro núcleos, dois medallions simultâneos não dividem a máquina — os
+dois rastejam e ainda disputam a escrita das mesmas tabelas de `gold/organic/`.
+
+### Verde não é o mesmo que atualizado
+
+Cada DAG termina afirmando o frescor: `max(snapshot_date)` da gold é o dia que aquela rodada
+devia fechar. Sem a asserção, o único sinal é "nenhuma tarefa falhou" — que é compatível com
+raw velho, sync vazio e página esquecida.
+
 ## Existência de objeto
 
 Deletados chegam explicitamente em `secondary_status` — `CAMPAIGN_STATUS_DELETE`,
@@ -451,6 +519,12 @@ Instagram o último dia vem com `is_partial = true` até a releitura seguinte.
 - Somar `organic` com `total`.
 - Somar alcance de posts ou de dias como se fosse gente.
 - Somar `account_daily` com `content_daily`.
+- **Tratar métrica de insight de conteúdo antigo como desempenho.** Fora da janela de retenção
+  da Meta, `reach` e `views` chegam como um resíduo — um post com milhares de curtidas e alcance
+  perto de zero —, e a fonte responde isso em vez de erro. O corte não é o aniversário do
+  conteúdo: ele vem em lote, atinge metade do acervo antigo de uma vez e cada métrica morre
+  numa idade diferente. O lake entrega o número cru; quem consome deriva o horizonte por
+  plataforma **e por métrica** e marca o que está fora como não medido, nunca como zero.
 
 ### Conservação
 

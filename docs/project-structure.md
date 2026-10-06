@@ -19,13 +19,16 @@ binder_etl/
 ├── dags/
 │   ├── tiktok/tiktok_daily.py
 │   ├── facebook_organic/facebook_organic_daily.py
-│   └── instagram_organic/instagram_organic_daily.py
+│   └── instagram_organic/
+│       ├── instagram_organic_daily.py
+│       └── instagram_stories_daily.py   # alvo: stories têm extração e DAG próprios
 ├── src/
 │   ├── config/settings.py   # MinIO e demais settings
 │   ├── spark_session.py     # Spark + Delta + S3A
 │   ├── api/                 # FastAPI de catálogo
 │   │   ├── main.py          # app + lifespan async (Spark antes de servir)
 │   │   └── routes/catalog.py
+│   ├── airbyte/             # alvo: cliente da API pública (token, disparo, poll de job)
 │   ├── io/
 │   │   ├── reader.py        # lê Parquet/Delta do MinIO
 │   │   └── writer.py        # escreve Delta no MinIO
@@ -136,7 +139,8 @@ camada de CLI — só API + transforms.
 | `src/api/routes/catalog.py` | `GET` catálogo para descoberta do Bridge |
 | `src/spark_session.py` | Sessão Spark com Delta + MinIO S3A |
 | `src/transformers/{platform}/tables.py` | SSOT de metadados da plataforma |
-| `dags/{platform}/{platform}_daily.py` | Orquestração Airflow |
+| `dags/{platform}/{platform}_daily.py` | Orquestração Airflow: dispara a extração, aguarda, monta o medallion |
+| `src/airbyte/` | Cliente da API pública do Airbyte, compartilhado pelos DAGs (alvo) |
 | `dev/` + perfil `dev` do Compose | Sandbox para explorar o lake e prototipar |
 
 ## Contrato da Catalog API
@@ -220,6 +224,14 @@ Mesmo molde do `facebook_organic` e o mesmo registro: `TRANSFORMERS` e `PLATFORM
 | Gold | partição `instagram` de `gold/organic/`: `content`, `content_daily`, `account_daily`, `stories` |
 
 DAG `instagram_organic_daily` às 08:00 UTC.
+
+## Plataformas orgânicas: um DAG por extração
+
+Um DAG por conexão de extração, não por plataforma: o Instagram tem dois (principal e stories)
+porque são duas conexões com horários diferentes, e os dois chamam o mesmo medallion de
+plataforma. O Facebook tem um, que dispara em paralelo quantas conexões de página existirem e
+consolida tudo numa passada — o curinga do `raw_path` é o que permite isso. O desenho e o porquê
+estão em [architecture.md](architecture.md#orquestração-airflow--airbyte).
 
 ## Plataformas orgânicas: código compartilhado
 

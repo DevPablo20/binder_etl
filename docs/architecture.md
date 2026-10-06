@@ -60,9 +60,10 @@ não como erro.
 
 ## Orquestração (Airflow × Airbyte)
 
-> **Alvo.** Desenho decidido e ainda não em produção: nos DAGs atuais o `sync_raw` é um
-> `EmptyOperator` e o acoplamento com a extração é por horário combinado. Estado em
-> [plans/organic.md](plans/organic.md).
+> **Parcialmente alvo.** Os DAGs do orgânico já disparam a extração e esperam o job; o que
+> falta é a entrega final — as conexões ainda têm cron no Airbyte, convivendo com o disparo do
+> Airflow, e não há alerta de falha. Nas plataformas pagas, o `sync_raw` segue um
+> `EmptyOperator`. Estado em [plans/organic.md](plans/organic.md).
 
 Cada extração tem um DAG, e o DAG é dono da sequência: **dispara a conexão do Airbyte, aguarda
 o job terminar, monta o medallion.** Horário combinado não é dependência — se a extração atrasa
@@ -122,9 +123,17 @@ dois rastejam e ainda disputam a escrita das mesmas tabelas de `gold/organic/`.
 
 ### Verde não é o mesmo que atualizado
 
-Cada DAG termina afirmando o frescor: `max(snapshot_date)` da gold é o dia que aquela rodada
-devia fechar. Sem a asserção, o único sinal é "nenhuma tarefa falhou" — que é compatível com
-raw velho, sync vazio e página esquecida.
+Duas metades, e nenhuma delas olha o relógio.
+
+A primeira é a dependência: o medallion só roda depois de o job de extração terminar bem, e
+quem orquestra roda com `ETL_STRICT` ligado — silver faltando ou vazio falha a tarefa em vez de
+pular o fato e seguir verde.
+
+A segunda é uma invariante na própria gold, antes da escrita: a foto mais nova do silver tem de
+ter chegado à gold (`assert_photo_reached_gold`). Comparar com "hoje" quebraria todo
+reprocessamento fora do horário do sync; a pergunta que esta camada pode responder é *o que o
+lake extraiu chegou à ponta?*. Vale para o `content_daily`, cujo grão é a foto diária — fica de
+fora o `account_daily`, cuja data é a da métrica na fonte e atrasa por desenho.
 
 ## Existência de objeto
 

@@ -13,9 +13,9 @@ Facebook e Instagram orgânicos são **uma** iniciativa, não duas: compartilham
 
 ## Próxima ação
 
-Passo 0 da orquestração: `AIRBYTE_API_URL` no `.env`/`.env.example`, as três variáveis
-`AIRBYTE_*` no `airflow-common-env` do compose e os campos em `src/config/settings.py`.
-Hoje o container do Airflow alcança o Airbyte mas não recebe credencial nenhuma.
+Passo 8 (alerta de falha) depende de uma decisão: qual canal. Depois dele, o passo 9 — as três
+conexões para `scheduleType: "manual"` —, que é o ponto sem volta e só deve acontecer com os
+três DAGs verdes em dia normal.
 
 ## Objetivo
 
@@ -23,9 +23,9 @@ Levar ao lake o conteúdo orgânico de páginas do Facebook e contas de Instagra
 oficial do Airbyte como está, e **garantir que as tabelas de `gold/organic/` estejam atualizadas
 todo dia por dependência, não por horário combinado**.
 
-As duas camadas medallion estão implementadas e rodando. O que falta é a orquestração: hoje o
-`sync_raw` dos DAGs é um `EmptyOperator`, e se a extração atrasa ou falha o medallion roda sobre
-o raw de ontem e **termina verde**.
+As duas camadas medallion e a orquestração estão implementadas. Falta a entrega: desligar o
+cron das conexões que o Airflow já dispara, e um alerta de falha. Até lá os dois convivem, com
+o cron do Airbyte como rede de segurança.
 
 **Fora do escopo:**
 
@@ -55,23 +55,26 @@ Orquestração:
 
 | # | Passo | Status |
 |---|---|---|
-| 0 | `AIRBYTE_*` chegando ao container do Airflow, via `.env` e compose | a fazer |
-| 1 | `src/airbyte/`: token, `POST /jobs`, poll de `GET /jobs/{id}`, timeout | a fazer |
-| 2 | Pools `airbyte_sync` (2 slots) e `spark_medallion` (1 slot); `spark.driver.memory` 4g | a fazer |
-| 3 | `instagram_organic_daily`: disparo + espera + medallion, às 02:00 SP | a fazer |
-| 4 | `instagram_stories_daily`: DAG novo, às 09:30 SP | a fazer |
-| 5 | `facebook_organic_daily`: fan-out por conexão descoberta, às 01:00 SP | a fazer |
-| 6 | Checagem de conexão órfã: conexão `Organic` que nenhum DAG reivindica falha | a fazer |
-| 7 | Asserção de frescor: `max(snapshot_date)` do gold é o dia esperado | a fazer |
-| 8 | Alerta de falha (hoje é `retries: 1` e silêncio) | a fazer |
+| 0 | `AIRBYTE_*` chegando ao container do Airflow, via `.env` e compose | feito 06/10 |
+| 1 | `src/airbyte/`: token, `POST /jobs`, poll de `GET /jobs/{id}`, timeout | feito 06/10 |
+| 2 | Pools `airbyte_sync` (2 slots) e `spark_medallion` (1 slot); `spark.driver.memory` 4g | feito 06/10 |
+| 3 | Asserção de frescor no gold, antes da escrita | feito 06/10 |
+| 4 | `instagram_organic_daily`: disparo + espera + medallion, às 02:00 SP | feito 06/10 |
+| 5 | `instagram_stories_daily`: DAG novo, às 09:30 SP | feito 06/10 |
+| 6 | `facebook_organic_daily`: fan-out por conexão descoberta, às 01:00 SP | feito 06/10 |
+| 7 | Checagem de conexão órfã: conexão `Organic` que nenhum DAG reivindica falha | feito 06/10 |
+| 8 | Alerta de falha (hoje é `retries: 1` e silêncio) | a fazer — falta decidir o canal |
 | 9 | As três conexões orgânicas para `scheduleType: "manual"` no Airbyte | a fazer, **por último** |
 | 10 | Rótulos "alvo" saem de `docs/`; plano apagado | a fazer |
+
+A asserção de frescor subiu de 7 para 3: ela é só `src/`, não depende de DAG, e com ela no
+lugar desde o começo o primeiro DAG testado já exercita o caminho inteiro.
 
 O passo 9 é o último de propósito: enquanto os DAGs não estiverem verdes, o cron do Airbyte é a
 rede de segurança. Enquanto os dois convivem, o disparo do Airflow pode cair em cima do job do
 cron — o Airbyte não roda dois jobs da mesma conexão ao mesmo tempo.
 
-O passo 3 prova o padrão com uma conexão só; o 5 é o único com fan-out. Daí a ordem.
+O passo 4 prova o padrão com uma conexão só; o 6 é o único com fan-out. Daí a ordem.
 
 ## Onde está o desenho
 
@@ -80,8 +83,9 @@ O passo 3 prova o padrão com uma conexão só; o 5 é o único com fan-out. Da�
 - Conexões, tags, `namespaceFormat`, seleção de campos e agendamento: `airbyte/README.md`.
 - Regras que valem sempre: `CLAUDE.md`.
 
-As seções de orquestração em `docs/` estão marcadas **alvo**: são desenho decidido, não código
-em produção. O rótulo sai no passo 10.
+A seção de orquestração do `docs/architecture.md` está marcada **parcialmente alvo**: os DAGs
+disparam e esperam, mas as conexões ainda têm cron no Airbyte (passo 9) e não há alerta
+(passo 8). O rótulo sai no passo 10.
 
 ## Decisões em aberto
 
@@ -89,7 +93,6 @@ em produção. O rótulo sai no passo 10.
 |---|---------|-----------|
 | D1 | **Horizonte por métrica dentro do pipeline.** Métrica de insight de conteúdo antigo é resíduo, não desempenho, e cada métrica morre numa idade diferente (diário de 06/10). Hoje quem protege disso é o dashboard do cliente, por heurística; o lake entrega o número cru | Decidir onde mora: coluna de qualidade no silver (`lifetime_truncated_at` por conteúdo × métrica, detectada pela queda) e/ou horizonte por `platform` × métrica no gold, com "não medido" distinto de zero. Enquanto estiver aberta, todo consumidor repete a heurística |
 | D2 | **Revisão tardia das métricas da conta do Instagram.** O conector relê só o dia anterior e a Meta avisa revisão até 48h, então cada dia para de ser lido muito antes de parar de mudar | Medir a diferença entre a penúltima e a última leitura de cada dia. Mensurável: há fotos desde 29/09 e o cron principal (02:00 SP) não mudou. Ao medir, refazer a conta de quantas horas depois do fim do dia vem a última leitura |
-| D3 | **A espera do job prende um slot do LocalExecutor.** Poll bloqueante é simples e aguenta sync de minutos; com o fan-out de páginas, N esperas simultâneas ocupam N slots | Medir a duração real de um sync de página. Passando de ~15 min, trocar o poll por `@task.sensor` em modo `reschedule`, que solta o slot entre tentativas |
 | D4 | **Onde mora o horário depois da migração.** Com o disparo no Airflow, mudar hora de extração vira commit — bom para rastreabilidade, ruim para experimentar (a troca do cron de stories em 06/10 foi pelo painel) | Decidir ao fim do passo 9: aceitar o commit, ou ler o horário de uma Variable do Airflow |
 | D5 | **Teto do pool `airbyte_sync`.** 2 slots agora; a RAM aguentaria ~5, a CPU (4 núcleos) não | Na terceira conexão de página: medir a duração de um sync sozinho contra dois simultâneos. Só subir para 3 se o tempo individual não piorar |
 
@@ -97,11 +100,13 @@ em produção. O rótulo sai no passo 10.
 
 | # | Decisão | Fechada em |
 |---|---------|-----------|
+| ~~D3~~ | **A espera é sensor em `reschedule`, não poll bloqueante** — fechada pela medição, não pelo palpite: o sync principal do Instagram leva 23 a 34 min, bem acima do limite de ~15 min que a decisão previa. Já implementado | 06/10 |
 | **Retenção** | **Não existe corte por aniversário de 2 anos.** A regra que os planos antigos propunham (`is_beyond_retention` por `created_date + 24 meses`) está errada nos dois sentidos: esconderia post de 27 meses com número bom e não pegaria a queda real, que vem em lote e só aparece como delta muito negativo. Vira a D1 | 06/10 |
 | **Stories** | **Cron em 09:30 São Paulo** (`0 30 9 * * ?`), pouco antes da primeira janela de publicação. Stories da manhã passam a ser lidos com ~23h de vida; os da noite seguem com ~16h, e fechar isso pede uma segunda leitura no fim da tarde, não uma hora diferente | 06/10 |
-| **Fan-out** | **O fan-out do Facebook é da extração, não do medallion.** N syncs em paralelo, **um** medallion depois de todos | 06/10 |
-| **Falha de página** | **Página que falha não bloqueia o medallion** (`all_done`). O silver já modela buraco com `gap_days`; a asserção de frescor diz qual página ficou atrás | 06/10 |
-| **Lista de conexões** | **Instagram declarado por id, Facebook descoberto** por tag `Organic` + `namespaceFormat` começando com `facebook_organic/` | 06/10 |
+
+As três decisões de orquestração que estavam nesta tabela — fan-out da extração, página que
+falha não bloqueia, lista de conexões — saíram: estão no código e descritas em
+`docs/architecture.md`.
 
 ## Diário
 
@@ -162,3 +167,52 @@ exigindo acompanhamento horário, e o Append horário multiplicava o raw por 24.
 
 **06/10** — Consequência de consumo a acertar quando o passo 4 entrar: o refresh do dashboard
 da Texaco roda ~08:04 São Paulo e passaria a ver stories de ontem. Depois das 09:45.
+
+**06/10** — **Passos 0 a 7 implementados.** O que o caminho ensinou, além do previsto:
+
+- **A API de jobs do Airbyte ordena ascendente.** `GET /jobs?limit=1` devolve o job mais
+  **antigo** da conexão, não o mais recente. O cliente pede `orderBy=createdAt|DESC`
+  explicitamente; sem isso, procurar o job em andamento numa conexão com histórico leria os
+  primeiros jobs de sempre. Pego antes de rodar, por desconfiança da ordem — não por falha.
+- **O heap default do Spark é 1 GiB, medido.** `spark.driver.memory` pelo builder do PySpark
+  **funciona** (a dúvida era se só valeria via `spark-submit`): com a config, heap real de
+  4,00 GiB; sem ela, 1,00 GiB. Agora é `settings.spark_driver_memory`.
+- **`ETL_STRICT` no Airflow é `ETL_STRICT_AIRFLOW` no compose**, com default `true`, para não
+  arrastar a CLI e o catalog-api — que seguem tolerantes com o `ETL_STRICT` do `.env`.
+- **A espera em `reschedule` se provou no primeiro DAG:** o poke das 20:54 marcou
+  `UP_FOR_RESCHEDULE` e soltou o slot, e o job foi reconhecido no poke seguinte. Um poll
+  bloqueante teria segurado o slot do LocalExecutor o sync inteiro.
+
+Medições do dia, para a D5 e a D3: sync de stories ~1,5 min; Facebook 3,5–6 min; Instagram
+principal 23–34 min.
+
+**06/10** — **Verificação dos DAGs, rodando à mão com os crons do Airbyte ainda ligados.**
+
+- `instagram_stories_daily` verde duas vezes (a segunda provou idempotência). Resultado que
+  importa: `gold/organic/stories` passou a ter **stories do próprio dia** — antes deste DAG a
+  leitura das 09:30 só era transformada na rodada seguinte.
+- `facebook_organic_daily` verde no caminho completo do fan-out: descoberta achou a Texaco pelo
+  `namespaceFormat`, disparo mapeado, espera, gate, bronze, silver, gold. A gold ganhou a foto
+  de 06/10 (695 posts, 51 visualizações e 41 de alcance novo no dia).
+- `instagram_organic_daily` exercitou a espera longa: 14 pokes em `reschedule`, soltando o slot
+  entre cada um.
+- **Pool provado com dois DAGs diferentes:** `spark_medallion` em `em_uso=1, na_fila=1`, com o
+  medallion do Facebook esperando o do stories.
+- **Gate provado no caminho negativo**, sem criar DagRun: sem nenhuma espera (descoberta
+  falhou), uma falha, duas falhas → falha com a mensagem certa; uma de duas extraiu, duas de
+  duas → segue.
+- **Conexão inexistente falha alto:** `AirbyteError` com HTTP 404 e corpo da resposta, com o
+  erro do disparo preservado em vez do erro da investigação.
+
+**06/10** — **A suíte inteira é frágil quanto à ordem, e isso apareceu aqui.** Rodando `pytest
+tests/` com um sync do Airbyte em andamento, o `test_conservation.py` do Instagram falhou:
+gold 18.819 linhas contra silver 19.409. Não era bug de código.
+
+O pytest coleta as pastas em ordem alfabética — `bronze`, **`gold`**, **`silver`**,
+`test_conservation.py` — e os `test_smoke.py` **rodam os transformers de verdade e escrevem no
+MinIO**. Então o gold é materializado a partir do silver anterior, e só depois o silver é
+atualizado. Normalmente inofensivo; com raw novo aparecendo no meio (o sync em andamento tinha
+escrito 590 linhas parciais de `media_insights`), o teste compara silver fresco com gold velho.
+
+Duas consequências práticas: **não rodar a suíte com sync em andamento**, e a ordem merece
+correção (fora desta iniciativa).

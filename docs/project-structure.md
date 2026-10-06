@@ -19,16 +19,17 @@ binder_etl/
 ├── dags/
 │   ├── tiktok/tiktok_daily.py
 │   ├── facebook_organic/facebook_organic_daily.py
+│   ├── organic_tasks.py     # tarefas compartilhadas: dispara, espera, consolida
 │   └── instagram_organic/
 │       ├── instagram_organic_daily.py
-│       └── instagram_stories_daily.py   # alvo: stories têm extração e DAG próprios
+│       └── instagram_stories_daily.py   # stories têm extração e DAG próprios
 ├── src/
 │   ├── config/settings.py   # MinIO e demais settings
 │   ├── spark_session.py     # Spark + Delta + S3A
 │   ├── api/                 # FastAPI de catálogo
 │   │   ├── main.py          # app + lifespan async (Spark antes de servir)
 │   │   └── routes/catalog.py
-│   ├── airbyte/             # alvo: cliente da API pública (token, disparo, poll de job)
+│   ├── airbyte/client.py    # API pública do Airbyte: token, disparo, poll de job
 │   ├── io/
 │   │   ├── reader.py        # lê Parquet/Delta do MinIO
 │   │   └── writer.py        # escreve Delta no MinIO
@@ -140,7 +141,8 @@ camada de CLI — só API + transforms.
 | `src/spark_session.py` | Sessão Spark com Delta + MinIO S3A |
 | `src/transformers/{platform}/tables.py` | SSOT de metadados da plataforma |
 | `dags/{platform}/{platform}_daily.py` | Orquestração Airflow: dispara a extração, aguarda, monta o medallion |
-| `src/airbyte/` | Cliente da API pública do Airbyte, compartilhado pelos DAGs (alvo) |
+| `src/airbyte/client.py` | API pública do Airbyte: a porta por onde os DAGs disparam e esperam |
+| `dags/organic_tasks.py` | Tarefas compartilhadas pelos DAGs do orgânico (importa Airflow, por isso não mora em `src/`) |
 | `dev/` + perfil `dev` do Compose | Sandbox para explorar o lake e prototipar |
 
 ## Contrato da Catalog API

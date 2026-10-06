@@ -53,7 +53,11 @@ Configure via `.env` (copy from `.env.example`):
 | `AIRBYTE_PORT` | Host port for the Airbyte ingress (default `8080`) |
 | `AIRBYTE_INSECURE_COOKIES` | Non-empty ⇒ `abctl local install --insecure-cookies`. Required: Airbyte is served over plain HTTP, and a `Secure` session cookie is dropped by the browser, breaking login with no error. Empty only if TLS terminates in front |
 | `AIRBYTE_HOST` | Ingress hostname; empty ⇒ wildcard ingress, needed to reach Airbyte by IP over the VPN. Setting it makes access by IP return 404 |
-| `ETL_STRICT` | `true` = fail on missing/empty sources; default warns and skips |
+| `AIRBYTE_API_URL` | Public API base URL the DAGs use to trigger syncs and follow jobs. **Not** `localhost`: inside the Airflow container that is the container itself, and `host.docker.internal` does not resolve (no `extra_hosts`, and Airbyte lives in abctl's kind). Use the host IP |
+| `AIRBYTE_CLIENT_ID` / `AIRBYTE_CLIENT_SECRET` | Public API credentials (Airbyte application). Passed to the Airflow containers through compose — `settings.py` loads `.env` from the repo root, which is not mounted there |
+| `ETL_STRICT` | `true` = fail on missing/empty sources; default warns and skips. Applies to the CLI, the tests and the catalog API |
+| `ETL_STRICT_AIRFLOW` | Same switch for the Airflow containers, defaulting to `true`: orchestration must not degrade silently. Separate variable so raising it in the DAGs does not also change CLI behaviour |
+| `SPARK_DRIVER_MEMORY` | Driver heap (default `4g`). Spark's own default is 1 GiB, and the medallion runs entirely in the driver (`local[*]`) |
 | `CATALOG_API_PORT` | Host port for catalog FastAPI (default `8002`; avoid `AIRBYTE_PORT` — `8080` here — and abctl's default `8000`) |
 
 ## Practices
@@ -63,7 +67,11 @@ Configure via `.env` (copy from `.env.example`):
 - Keep Airbyte **outside** docker-compose — run `abctl` on the host.
 - Always install with the flags built from `.env` (`--insecure-cookies`, `--host`) — see [airbyte/README.md](../airbyte/README.md#access-over-vpn---insecure-cookies). Re-running the install is a `helm upgrade` and keeps connections and sync state; `--persisted` on `uninstall` destroys them.
 - Land data to `raw/airbyte/{platform}/{stream}/` as Parquet.
-- MVP: manual sync; DAG `sync_raw` is a placeholder until `AirbyteTriggerSyncOperator` is wired.
+- The organic DAGs trigger their own sync through the public API (`src/airbyte/client.py`) and
+  wait for the job — no provider, stdlib only. The paid platforms still rely on the Airbyte
+  cron, with `sync_raw` as a placeholder.
+- `GET /jobs` sorts **ascending**: without `orderBy=createdAt|DESC`, `limit=1` returns the
+  connection's oldest job.
 
 ### Transform (Spark)
 
@@ -83,8 +91,13 @@ Configure via `.env` (copy from `.env.example`):
 ### Orchestration (Airflow)
 
 - Invoke Spark via `BashOperator` calling the pipeline CLI.
-- DAG flow: `sync_raw → bronze_{platform} → silver_{platform} → gold_{platform}`.
-- DAGs paused at creation; schedule `@daily`.
+- Organic DAG flow: `trigger_sync → wait_for_sync → bronze_{platform} → silver_{platform} →
+  gold_{platform}`, one DAG per extraction connection. Shared tasks in `dags/organic_tasks.py`.
+- The wait is a sensor in `reschedule` mode, not a blocking poll: the Instagram sync takes
+  over twenty minutes and would hold a LocalExecutor slot the whole time.
+- Pools: `airbyte_sync` (2 slots) and `spark_medallion` (1 slot), created by `airflow-init`.
+- DAGs paused at creation; organic schedules are cron in `America/Sao_Paulo`, from a tz-aware
+  `start_date`.
 
 ### Dependencies
 

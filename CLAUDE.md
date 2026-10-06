@@ -140,6 +140,7 @@ python -m src.pipelines.run medallion instagram_organic # conteúdo das contas d
 docker compose up                               # MinIO + Postgres (meta Airflow) + Airflow
 docker compose --profile dev up spark-dev       # sandbox Spark
 uvicorn src.api.main:app                        # FastAPI de catálogo
+docker compose --profile dev run --rm spark-dev pytest tests/  # suíte no container (Spark + MinIO)
 pytest tests/                                   # suíte inteira, todas as plataformas
 pytest tests/transformers/tiktok/               # só TikTok — árvore espelha src/transformers/tiktok/
 pytest tests/transformers/tiktok/test_conservation.py  # invariante de conservação (rode o medallion antes)

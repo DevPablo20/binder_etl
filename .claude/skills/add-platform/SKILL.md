@@ -104,6 +104,17 @@ A Catalog API passa a servir a plataforma automaticamente.
 `dags/{platform}/{platform}_daily.py`, tarefas `{layer}_{platform}`, terminando em
 `gold_{platform}`.
 
+**Um DAG por conexão de extração, não por plataforma**, e o DAG é dono da sequência: dispara o
+Airbyte, espera o job, monta o medallion. Reaproveite `dags/organic_tasks.py` —
+`trigger_sync`, `wait_for_sync` (sensor em `reschedule`) e `chain_medallion` — e os pools
+`airbyte_sync` e `spark_medallion`. Não copie o `sync_raw` com `EmptyOperator` dos DAGs das
+plataformas pagas: ele é placeholder, e quem o copia ganha um medallion acoplado à extração por
+horário combinado, que roda sobre o raw de ontem e termina **verde**.
+
+Conexão com fan-out (mais de uma conta ou página na mesma plataforma) paraleliza só a
+**extração**: N syncs com `.expand()` e **um** medallion depois, como em
+`facebook_organic_daily.py`. Ver `docs/architecture.md`, seção Orquestração.
+
 ## 8. Testes
 
 Copie `tests/transformers/tiktok/` para `tests/transformers/{platform}/` — mesma árvore,

@@ -267,8 +267,20 @@ Each sync is a complete snapshot; the bronze keeps one snapshot per day.
 
 ### Schedule
 
-Cron **01:00 America/Sao_Paulo**. The DAG `facebook_organic_daily` runs afterwards, before
-06:00 São Paulo, so the snapshot closes the previous day.
+**01:00 America/Sao_Paulo**, before the 06:00 cutoff that sets `snapshot_date`, so the snapshot
+closes the previous day.
+
+The schedule is moving from Airbyte to Airflow: `facebook_organic_daily` triggers the sync
+through the public API and waits for the job, instead of running at a time that merely hopes the
+sync is done. **While both are armed, the cron is a safety net** — the DAG may find the cron's
+job already running and will follow that one, since Airbyte never runs two jobs of the same
+connection at once. Once the DAGs are trusted, every connection a DAG triggers goes to
+`scheduleType: "manual"`; see [docs/plans/organic.md](../docs/plans/organic.md).
+
+**Page connections are discovered, not listed.** `facebook_organic_daily` takes every active
+connection tagged `Organic` whose `namespaceFormat` starts with `facebook_organic/`, so a new
+page needs no code change — and a connection tagged `Organic` that no DAG triggers fails the
+DAG's orphan check, by design.
 
 ## Instagram → MinIO connections (`instagram_organic`)
 
@@ -284,6 +296,11 @@ Two connections write to the same destination, bucket `raw`, **path format
 |------------|---------|------------------------|
 | main | `users`, `user_insights`, `user_lifetime_insights`, `media`, `media_insights` | `0 0 2 * * ?` — 02:00 America/Sao_Paulo |
 | stories | `stories`, `story_insights` | `0 30 9 * * ?` — 09:30 America/Sao_Paulo |
+
+Both are declared by id in `dags/organic_tasks.py` and triggered by their own DAG
+(`instagram_organic_daily`, `instagram_stories_daily`) — they share the namespace
+`instagram_organic`, so discovery cannot tell them apart. Same cron-as-safety-net note as the
+Facebook section above.
 
 Stories get their own connection because story metrics only exist while the story is live
 (24h): once the story expires, its numbers are gone for good, so whatever the last reading

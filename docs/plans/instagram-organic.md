@@ -11,8 +11,10 @@ parte de `arch/facebook-organic`.
 
 ## Próxima ação
 
-Fechar D1 junto com o Facebook e medir D2 com alguns dias de syncs. Com as duas fechadas,
-apagar este plano e tirar o ponteiro do `CLAUDE.md`.
+D1 medida e **fechada em 06/10** (diário): o corte existe no `reach`, mas não é por
+aniversário de post — a regra que a D1 propunha não se aplica. Fica a **D3** (horizonte por
+métrica dentro do pipeline, compartilhada com o Facebook) e a **D2**, que agora tem 7 dias de
+fotos e pode ser medida. A **D4** (hora do sync de stories) nasceu e fechou em 06/10.
 
 ## Objetivo
 
@@ -50,7 +52,7 @@ Facebook:
 | 5 | Testes: unitários por transform + conservação por mídia | feito 30/09 |
 | 6 | Registro em `TRANSFORMERS`/`PLATFORMS`, fora do catálogo | feito 30/09 |
 | 7 | DAG `instagram_organic_daily` | feito 30/09 |
-| 8 | Desenho implementado sobe para `docs/`; plano apagado | desenho em `docs/` feito 30/09; plano fica até fechar D1 e D2 |
+| 8 | Desenho implementado sobe para `docs/`; plano apagado | desenho em `docs/` feito 30/09; plano fica até fechar D2, D3 e D4 |
 
 ## Onde está o desenho
 
@@ -67,8 +69,10 @@ Facebook:
 
 | # | Decisão | Como fecha |
 |---|---|---|
-| D1 | **O `lifetime` perde o que tem mais de 2 anos?** A doc diz que as métricas ficam guardadas por até 2 anos. Um post do Binder de 2017 tem alcance 6 com 43 curtidas. Se o corte existir, a regra é a mesma da D1 do Facebook: delta só até 24 meses de idade | Fecha junto com a D1 do Facebook, depois de alguns dias de syncs: o post `18153850864324974` (Texaco, 30/09/2024 09:12, alcance 1.666) — se o alcance cair, o corte existe. Apoio: o post `17851618636187379` (Binder, 23/03/2017) no Business Suite |
-| D2 | **Revisão tardia das métricas da conta.** O conector relê só o dia anterior; com o cron à 01:00, cada dia é lido pela última vez ~21h depois de terminar, e a Meta avisa revisão até 48h | Medir por alguns dias a diferença entre a penúltima e a última leitura de cada dia |
+| ~~D1~~ | ~~**O `lifetime` perde o que tem mais de 2 anos?**~~ | **Fechada em 06/10:** o `reach` de conteúdo com 2+ anos é resíduo, sim — mas nenhum post caiu no próprio aniversário. As 727 quedas aconteceram **todas na foto de 02/10**, em lote. A regra por idade da D1 não entra; vira D3 |
+| D2 | **Revisão tardia das métricas da conta.** O conector relê só o dia anterior e a Meta avisa revisão até 48h, então cada dia para de ser lido muito antes de parar de mudar | Medir por alguns dias a diferença entre a penúltima e a última leitura de cada dia. **Aberta, agora mensurável:** há 7 dias de fotos (29/09–05/10) e o cron principal não mudou. Ao medir, refazer a conta de quantas horas depois do fim do dia vem a última leitura — a versão anterior desta linha partia de um cron à 01:00, e o real é **02:00 São Paulo** |
+| D3 | **Horizonte por métrica dentro do pipeline** (mesma do Facebook, ver `facebook-organic.md`). No Instagram o degrau está no `reach`: mediana 251 em 2024-10 contra 4.299 em 2024-11 | Decidir onde mora: `lifetime_truncated_at` no silver, detectado pela queda, e/ou horizonte por `platform` × métrica no gold, com "não medido" distinto de zero |
+| ~~D4~~ | ~~**Hora do sync diário de stories.**~~ | **Fechada em 06/10:** cron em `0 30 9 * * ? America/Sao_Paulo`. Resolve os stories da manhã (lidos com ~23h); os da noite continuam lidos com ~16h, e fechar isso exige uma segunda leitura no fim da tarde, não uma hora mais cedo. Fica assim por ora — sem campanha, 16h de acumulação é aceitável |
 
 ## Diário
 
@@ -155,3 +159,60 @@ verdes contra o remoto (conservação incluída); suíte inteira verde no local 
 skipped). As tabelas antigas continuam no MinIO e não são mais escritas:
 `gold/instagram_organic/{media_daily_metrics,account_daily_metrics,story_metrics}` e
 `silver/instagram_organic/media_insights_snapshot`.
+
+**06/10** — **D1 medida nos 7 dias de fotos (29/09 a 05/10) e fechada.** Do
+`silver/instagram_organic/media_metrics_daily`:
+
+- O post-testemunha (`18153850864324974`, publicado 30/09/2024) caiu de **1.666 para 81 de
+  alcance na foto de 02/10**, e ficou em 81. Completou 2 anos em 30/09 — dois dias antes da
+  queda, com duas fotos (30/09 e 01/10) ainda em 1.666. E o post `17845158231310366`
+  (05/10/2024) caiu no mesmo 02/10, com **23,9 meses** — antes do aniversário.
+- `reach` teve **727 quedas, todas na foto de 02/10**, idades de 23 a 93 meses, e **nenhuma
+  queda nas fotos de 03, 04 e 05/10**. Não é janela móvel por post: é um lote numa data só.
+  Atingiu 676 dos 1.319 conteúdos com 24+ meses naquela foto; 127 já estavam zerados.
+- `likes` e `comments` caem todo dia, de 1 a 7 unidades, em qualquer idade — é gente
+  descurtindo, não retenção. Nenhuma relação com os 2 anos.
+- O degrau real está no mês de publicação, e esse sim é compatível com ~24 meses: mediana de
+  `reach` na foto de 05/10 é **251 em 2024-10 contra 4.299 em 2024-11**; antes de 2022 a
+  mediana é 0 a 4, com curtidas em 60 a 180 — o retrato de "a Meta respondeu zero, não erro".
+
+Conclusão igual à do Facebook: o corte existe, mas **o gatilho não é o aniversário do post**, e
+por isso a regra por idade da D1 sai. O que dá para detectar é a queda (delta muito negativo
+numa métrica de insight) e o horizonte por métrica. Vira D3.
+
+**06/10** — **Cron dos stories: de horário para uma vez por dia, e depois para 09:30 São
+Paulo.** Decisão do Pablo, para não multiplicar o raw por 24 em Append e porque não há campanha
+exigindo acompanhamento horário. Medido no lake:
+
+- A última leitura horária foi em **03/10 21:00 UTC**; a leitura diária seguinte veio em
+  **06/10 06:00 UTC**. Nessas ~33 horas nenhum story foi lido: o que tenha sido publicado
+  depois de 03/10 ~22:00 UTC expirou sem leitura e **não existe mais** — insight de story só
+  vive 24h. Não há story com `created_at` em 03 ou 04/10 na tabela; se houve publicação nesses
+  dias, foi perdida, e não há como recuperar.
+- Na hora provisória (06:00 UTC = 03:00 São Paulo), o `hours_live_at_last_read` dos stories de
+  05/10 ficou em **9,5 a 16,1 horas**, contra **23,0 a 24,0** em todos os dias de sync horário.
+  As contas publicam ~11:00 e ~17:30 São Paulo, então a leitura das 03:00 pegava o story a meio
+  da vida. Daí o cron final: **09:30 São Paulo** (`0 30 9 * * ?`), pouco antes da primeira
+  janela de publicação — o story da manhã anterior é lido com ~23h e sobra mais de uma hora de
+  margem. O da noite segue com ~16h; resolver isso pede uma segunda leitura no fim da tarde.
+- **O rótulo de `snapshot_date` mudou de lado.** `SNAPSHOT_CUTOFF_HOURS` = 6: leitura antes das
+  06:00 São Paulo fecha o dia anterior, leitura às 09:30 fecha o próprio dia. A data de negócio
+  do gold vem de `published_date`, então consumidor nenhum sente; só uma auditoria foto a foto
+  cruza a troca.
+- **Stories passam a entrar no bronze com um dia de atraso**: o DAG roda às 08:00 UTC (05:00 São
+  Paulo), antes das 09:30, então a leitura do dia D só é transformada na rodada de D+1. Nada se
+  perde, mas o gold de stories fica um dia atrás do de conteúdo.
+- O `hours_live_at_last_read` já está no silver e no `gold/organic/stories`, então o consumidor
+  tem como saber que um story de 9,5h e um de 23h não se comparam.
+
+**06/10** — **A listagem das conexões pela API do Airbyte contrariou a doc em dois pontos**
+(`/api/public/v1/connections`, com as credenciais do `.env`):
+
+- A conexão principal do Instagram roda às **02:00** São Paulo, não à 01:00 como a tabela do
+  `airbyte/README.md` dizia. O diário de 30/09 já registrava "sync 36 (02:01 São Paulo)" — a
+  tabela é que nasceu errada. Corrigida. A conta de horas da D2 partia do 01:00 e precisa ser
+  refeita quando a decisão for medida.
+- O comentário de `src/transformers/snapshots.py` ainda diz que "os crons do Airbyte rodam à
+  01:00", o que agora é falso para quatro das sete conexões (Instagram principal 02:00,
+  stories 09:30, Facebook Marketing 04:00, Kwai 06:00). O corte de 6 horas continua certo; a
+  justificativa escrita é que envelheceu.

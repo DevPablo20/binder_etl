@@ -9,9 +9,11 @@ Iniciativa só do `binder_etl`. Nada aqui toca o backend nem o Bridge.
 
 ## Próxima ação
 
-Fechar D1 com o sync de 04/10: rodar o medallion e ver se o `media_views_lifetime` do post
-`280663778456254_122161958420250905` (353 em 30/09) cai no dia em que ele completa 2 anos.
-Depois, apagar este plano e tirar o ponteiro do `CLAUDE.md`.
+D1 medida e **fechada em 06/10**: não há corte por aniversário de 2 anos, e a regra que a D1
+propunha não descreve o que acontece (diário). No lugar dela entra a **D3**: levar o horizonte
+por métrica — hoje só no `dashboards/texaco_rj/extract.py` — para dentro do pipeline, marcando
+"não medido" em vez de zero. Com a D3 fechada, apagar este plano e tirar o ponteiro do
+`CLAUDE.md`.
 
 ## Objetivo
 
@@ -45,7 +47,7 @@ só entrega como total acumulado.
 | 5 | Testes: unitários por transform + conservação por post | feito 30/09 |
 | 6 | Registro em `TRANSFORMERS`/`PLATFORMS` | feito 30/09 — a rota do catálogo já devolvia 404 (o `KeyError` de `get_catalog_transforms` vira 404); não precisou mudar |
 | 7 | DAG `facebook_organic_daily` | feito 30/09 |
-| 8 | Desenho implementado sobe para `docs/`; plano apagado | desenho em `docs/` feito 30/09; plano fica até fechar D1 |
+| 8 | Desenho implementado sobe para `docs/`; plano apagado | desenho em `docs/` feito 30/09; plano fica até fechar D3 |
 
 ## Onde está o desenho
 
@@ -148,3 +150,27 @@ Implementado e rodado contra o MinIO de `192.168.10.80`: 692 posts em `content`,
 (conservação incluída); suíte inteira verde no local (73 passed, 6 skipped). As tabelas antigas
 continuam no MinIO e não são mais escritas: `gold/facebook_organic/post_daily_metrics`,
 `gold/facebook_organic/page_daily_metrics` e `silver/facebook_organic/post_insights_snapshot`.
+
+**06/10** — **D1 medida nos 7 dias de fotos (29/09 a 05/10) e fechada.** O que o lake mostra,
+lido do `silver/facebook_organic/post_metrics_daily`:
+
+- O post-testemunha (`…122161958420250905`, publicado 03/10/2024) caiu de **353 para 13
+  visualizações entre as fotos de 29/09 e 30/09** — e ficou em 13 até 05/10. Ele completou 2
+  anos em 03/10, três dias **depois** da queda: não foi o aniversário.
+- `media_views` teve **39 quedas, todas na foto de 30/09**, e nenhuma nas fotos de 01 a 05/10.
+  Numa janela móvel por post, cairia gente todo dia; não cai.
+- Os 39 estão concentrados em quem publicou de **2024-06 a 2024-10** (nada de 2024-11 em
+  diante), mas são **só ~1/3 do acervo dessa faixa** — a mediana de `media_views` dos posts de
+  2024-07, 08, 09 e 10 continua em 135, 139, 103 e 115 na foto de 05/10, contra 142–497 nos
+  meses de 2025–2026. **O `media_views` do Facebook não tem corte de 2 anos: ele sobrevive aos
+  27 meses do post mais antigo da página.** A queda de 30/09 foi um recálculo em lote, que
+  levou de 16% a 75% do valor de quem atingiu.
+- `reach` e `reactions_total` **não tiveram uma única queda**. O `reach` de post antigo já era
+  baixo por outro motivo, o da nota de 30/09: a mediana por mês de publicação é 1–4 até
+  2025-04 e salta para 154+ a partir de 2025-05 — comportamento de métrica nova
+  (`post_total_media_view_unique`, no conector desde 17/08/2026), não de retenção.
+
+Conclusão: **a regra proposta na D1 estaria errada.** Marcar `is_beyond_retention` por
+`created_date + 24 meses` esconderia posts de 27 meses com visualização boa e não pegaria o
+que de fato aconteceu — uma queda em lote, numa data só, visível apenas como delta negativo
+grande. O sinal confiável é a própria queda, não a idade. Vira D3.

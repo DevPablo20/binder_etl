@@ -102,6 +102,11 @@ sumiu. Deletados chegam explicitamente com `*_STATUS_DELETE` em `secondary_statu
   tabela inteira apagaria a outra rede. A gold é de consumo — a mecânica do delta fica no silver.
 - **Conexões do Airbyte sempre em Append, nunca Overwrite.** Overwrite apaga os arquivos
   anteriores do stream a cada sync; o bronze só acumula o que ainda está no raw quando roda.
+- **Stories do Instagram: nunca deixar 24h entre duas leituras.** O insight de story só existe
+  enquanto o story está vivo; publicado depois de uma leitura e expirado antes da próxima, ele
+  não chega ao lake e não há como recuperar. Trocar o cron abre exatamente esse buraco — a
+  troca anterior custou ~33h sem leitura. Story se compara por `hours_live_at_last_read`, não
+  pelo número cru: lido com 9h, ele ainda estava acumulando.
 - **Instalar o Airbyte com as flags montadas do `.env`, nunca o `abctl local install` cru.**
   Sem `--insecure-cookies` o login quebra: o Airbyte é servido em HTTP puro e o navegador
   descarta o cookie de sessão marcado `Secure` — a credencial correta falha sem mensagem de

@@ -282,11 +282,33 @@ Two connections write to the same destination, bucket `raw`, **path format
 
 | Connection | Streams | Schedule (Quartz cron) |
 |------------|---------|------------------------|
-| main | `users`, `user_insights`, `user_lifetime_insights`, `media`, `media_insights` | `0 0 1 * * ?` — 01:00 America/Sao_Paulo |
-| stories | `stories`, `story_insights` | `0 0 * * * ?` — every hour |
+| main | `users`, `user_insights`, `user_lifetime_insights`, `media`, `media_insights` | `0 0 2 * * ?` — 02:00 America/Sao_Paulo |
+| stories | `stories`, `story_insights` | `0 30 9 * * ?` — 09:30 America/Sao_Paulo |
 
-Stories get their own hourly connection because story metrics only exist while the story is
-live (24h): the last hourly reading is the final number.
+Stories get their own connection because story metrics only exist while the story is live
+(24h): once the story expires, its numbers are gone for good, so whatever the last reading
+captured is all the lake will ever have.
+
+The schedule is therefore a trade: an hourly connection read every story at ~23h of life (the
+final number) and appended a full copy of the stream 24 times a day; a daily connection reads
+each story once, at whatever age it happens to be when the sync fires. Hence 09:30: the
+accounts publish around 11:00 and 17:30 São Paulo, so a read just before the first window
+catches the previous morning's stories at ~23h of life. The evening ones are still read at
+~16h — closing that too takes a second daily read in the late afternoon, not an earlier hour.
+Three rules follow:
+
+- **Never let the gap between two reads reach 24h.** A story published right after a read
+  expires before the next one and is lost. Changing the schedule leaves exactly such a gap —
+  the switch from hourly to daily left ~33h without a read, and whatever was published in it
+  is gone.
+- **Compare stories by `hours_live_at_last_read`, not by raw numbers.** The column is in
+  `silver/instagram_organic/stories` and in `gold/organic/stories` for this reason: a story
+  read at 9h of life has not finished accumulating.
+- **Moving this cron across 06:00 São Paulo changes the `snapshot_date` label.** A reading
+  before 06:00 closes the previous day (`SNAPSHOT_CUTOFF_HOURS` in
+  `src/transformers/snapshots.py`); 09:30 closes the same day. Business dates in the gold come
+  from `published_date`, so consumers are unaffected — but a photo-by-photo audit of stories
+  spans the change.
 
 **Every stream is Append — never Overwrite.** Overwrite deletes the previous files of the
 stream on each sync; the stories connection would then keep only the last hour, and a story that

@@ -14,6 +14,7 @@ from src.transformers.instagram_organic.tables import (
     GoldFactConfig,
 )
 from src.transformers.instagram_organic.transforms.gold import GOLD_TRANSFORMS
+from src.transformers.organic_gold import assert_photo_reached_gold
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,8 @@ class InstagramOrganicGoldTransformer(BaseTransformer):
             return
 
         row_count = df.count()
+        # Frescor antes de publicar: o que o lake extraiu tem de ter chegado até aqui.
+        assert_photo_reached_gold(df, sources, fact.name)
         # A gold orgânica é compartilhada entre as redes: cada uma sobrescreve só a sua
         # partição, sem apagar a da outra.
         write_delta(

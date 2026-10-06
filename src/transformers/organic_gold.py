@@ -18,6 +18,7 @@ ordem e tipo, e coluna que a rede não tem vira nula.
 """
 from pyspark.sql import Column, DataFrame
 from pyspark.sql.functions import col, lit
+from pyspark.sql.functions import max as max_
 
 GOLD_PREFIX = "organic"
 
@@ -125,6 +126,61 @@ GRAIN_BY_TABLE: dict[str, tuple[str, ...]] = {
     "account_daily": ("platform", "account_id", "date"),
     "stories": ("platform", "story_id"),
 }
+
+
+# Qual data da gold é a foto diária do lake. `account_daily` fica de fora: a data dela é a da
+# métrica na fonte, que atrasa por desenho (o `page_insights` do Facebook chega com ~2 dias).
+# `content` e `stories` não têm grão de dia.
+PHOTO_DATE_BY_TABLE: dict[str, str] = {"content_daily": "date"}
+
+# A coluna que carrega a foto no silver, antes de a gold renomear para nome de negócio.
+SILVER_PHOTO_COLUMN = "snapshot_date"
+
+
+def assert_photo_reached_gold(
+    df: DataFrame, sources: dict[str, DataFrame], table: str
+) -> None:
+    """Verde não é o mesmo que atualizado: a foto mais nova do silver tem de chegar à gold.
+
+    Conservação de frescor, no mesmo espírito dos testes de conservação de métrica. Sem esta
+    verificação, um transform que perde o dia mais recente — por um join, um filtro ou uma
+    janela mal fechada — entrega gold velha **sem falhar**, e o único sinal seria alguém
+    estranhar o número no dashboard dias depois.
+
+    Não olha o relógio de propósito. Comparar com "hoje" quebraria todo reprocessamento pela
+    CLI fora do horário do sync; quem garante que a foto de hoje existe é a dependência do
+    DAG, que só chama o medallion depois de o job de extração terminar bem. Aqui a pergunta é
+    outra, e é a que esta camada pode responder: *o que o lake extraiu chegou à ponta?*
+
+    Roda antes da escrita — gold que perdeu o dia mais novo não deve ser publicada.
+    """
+    gold_column = PHOTO_DATE_BY_TABLE.get(table)
+    if gold_column is None or gold_column not in df.columns:
+        return
+
+    newest_in_silver = None
+    source_name = None
+    for name, source in sources.items():
+        if SILVER_PHOTO_COLUMN not in source.columns:
+            continue
+        candidate = source.agg(max_(SILVER_PHOTO_COLUMN)).first()[0]
+        if candidate is not None and (
+            newest_in_silver is None or candidate > newest_in_silver
+        ):
+            newest_in_silver, source_name = candidate, name
+
+    if newest_in_silver is None:
+        return
+
+    newest_in_gold = df.agg(max_(gold_column)).first()[0]
+    if newest_in_gold is not None and newest_in_gold >= newest_in_silver:
+        return
+
+    raise RuntimeError(
+        f"gold/{GOLD_PREFIX}/{table}: a foto mais nova do silver não chegou à gold — "
+        f"silver/{source_name} tem {SILVER_PHOTO_COLUMN} até {newest_in_silver}, "
+        f"a gold só até {newest_in_gold} na coluna `{gold_column}`"
+    )
 
 
 def conform(df: DataFrame, table: str, platform: str, **constants: Column) -> DataFrame:

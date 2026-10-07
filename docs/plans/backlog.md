@@ -3,6 +3,12 @@
 Ideias ainda sem escopo. Quando uma delas for escopada, vira um arquivo de iniciativa em
 `docs/plans/` e sai daqui.
 
+- **Alerta automático de falha de DAG.** Hoje o acompanhamento é manual, pela UI do Airflow
+  (`localhost:8081`), com `retries: 1` e silêncio no resto. Decisão de 07/10: começar simples e
+  só automatizar se a vigilância manual deixar passar algo. Quando entrar, é
+  `on_failure_callback` nos `default_args` dos DAGs do orgânico — falta escolher o canal.
+  Vale junto: **persistir os logs do Airflow** (`/opt/airflow/logs` não é volume montado, então
+  `docker compose up -d` apaga o log das tarefas e a UI mostra a falha sem o motivo).
 - **Trigger automático do Airbyte nas plataformas pagas** (Kwai, Facebook Marketing, TikTok).
   O `sync_raw` desses DAGs é um placeholder e o acoplamento com a extração é por horário. As
   orgânicas saíram daqui: estão escopadas em

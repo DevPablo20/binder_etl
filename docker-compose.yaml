@@ -22,6 +22,11 @@ x-airflow-common: &airflow-common
   volumes:
     - ./dags:/opt/airflow/dags
     - ./src:/opt/binder_etl/src
+    # Log de tarefa persistido: sem este bind, `/opt/airflow/logs` vive só dentro do
+    # container e cada `docker compose up -d` apaga o motivo das falhas — a UI mostra a run
+    # vermelha e o log vazio. O histórico de runs sobrevive porque está no Postgres, que já
+    # tem bind mount. A pasta precisa pertencer a `${AIRFLOW_UID}:0`.
+    - ./infra/airflow/logs:/opt/airflow/logs
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     postgres:

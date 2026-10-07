@@ -13,9 +13,9 @@ Facebook e Instagram orgânicos são **uma** iniciativa, não duas: compartilham
 
 ## Próxima ação
 
-Passo 8 (alerta de falha) depende de uma decisão: qual canal. Depois dele, o passo 9 — as três
-conexões para `scheduleType: "manual"` —, que é o ponto sem volta e só deve acontecer com os
-três DAGs verdes em dia normal.
+Passo 9: as três conexões orgânicas para `scheduleType: "manual"`. O ciclo agendado de 07/10
+rodou verde nas três, então a validação que o passo esperava está feita — o que falta é a
+decisão de virar, que é sem volta.
 
 ## Objetivo
 
@@ -63,7 +63,7 @@ Orquestração:
 | 5 | `instagram_stories_daily`: DAG novo, às 09:30 SP | feito 06/10 |
 | 6 | `facebook_organic_daily`: fan-out por conexão descoberta, às 01:00 SP | feito 06/10 |
 | 7 | Checagem de conexão órfã: conexão `Organic` que nenhum DAG reivindica falha | feito 06/10 |
-| 8 | Alerta de falha (hoje é `retries: 1` e silêncio) | a fazer — falta decidir o canal |
+| 8 | Alerta de falha | fechado 07/10: **acompanhamento manual** na UI, com o log de tarefa persistido para que a falha possa ser diagnosticada; disparo automático no backlog |
 | 9 | As três conexões orgânicas para `scheduleType: "manual"` no Airbyte | a fazer, **por último** |
 | 10 | Rótulos "alvo" saem de `docs/`; plano apagado | a fazer |
 
@@ -216,3 +216,51 @@ escrito 590 linhas parciais de `media_insights`), o teste compara silver fresco 
 
 Duas consequências práticas: **não rodar a suíte com sync em andamento**, e a ordem merece
 correção (fora desta iniciativa).
+
+**07/10** — **Primeiro ciclo agendado, nas agendas novas, verde nos três.** Facebook 7m33s,
+Instagram principal 33m26s, stories 6m16s.
+
+O ciclo real produziu a evidência que nenhum teste manual conseguia: **os crons do Airbyte e os
+disparos do Airflow colidiram de verdade**, porque estão na mesma hora.
+
+- Facebook, 04:00:02 — `POST /jobs` devolveu **HTTP 409 "A sync is already running"** e o DAG
+  passou a acompanhar o job 204, que o cron tinha começado um ou dois segundos antes.
+- Instagram principal, 05:00:01 — mesma coisa, job 206.
+- Stories, 12:30:01 — aqui o DAG ganhou a corrida e disparou o job 209.
+
+Sem o tratamento do "job já em andamento", dois dos três DAGs teriam falhado na primeira noite.
+Depois do passo 9 a corrida deixa de existir: o disparo do Airflow passa a ser o único.
+
+**A hora dos stories se confirmou no horário certo** (o teste de 06/10 foi às 20:54, fora de
+hora, e pegava os stories com 1 a 7h de vida). No ciclo das 09:30: stories publicados entre
+10:55 e 12:11 lidos com **21,3 a 22,6h**; o das 16:38 com 16,9h; o das 18:54 com 14,6h. O story
+da Texaco que em 06/10 saiu com 7h e 138 visualizações fechou com 22,6h e 279.
+
+**07/10** — **A única run que já falhou na história do Airflow está explicada.** Em 02/10 os
+DAGs do Facebook e do Instagram foram disparados à mão com **2 segundos de diferença**
+(17:51:08 e 17:51:10): o do Facebook levou 14,3 min — o dobro do normal — e o do Instagram
+falhou no bronze depois de 6,9 min. Às 18:29, sozinho, o mesmo Instagram rodou em 3,8 min.
+
+Dois medallions `local[*]` em quatro núcleos, cada um com o heap default de 1 GiB. É exatamente
+o modo de falha que o pool `spark_medallion` de um slot e o heap de 4 GiB passaram a impedir —
+e que foi visto funcionando em 06/10, com o medallion do Facebook esperando na fila o do
+stories. A causa não pode ser **provada**: o log da tarefa não existe mais, porque
+`/opt/airflow/logs` não é volume montado e foi apagado ao recriar os containers.
+
+**07/10** — **Log de tarefa do Airflow passou a ser persistido**, em
+`./infra/airflow/logs:/opt/airflow/logs`, seguindo o padrão dos outros bind mounts do repo
+(`infra/airflow/postgres_data`, `infra/minio/minio_data`). A pasta precisa pertencer a
+`${AIRFLOW_UID}:0`.
+
+Sem esse bind, o log vivia só dentro do container: o histórico de runs sobrevivia (está no
+Postgres, que já tem bind mount), mas o **motivo** de cada falha desaparecia a cada
+`docker compose up -d`. Com o acompanhamento de falha sendo manual pela UI, isso era o furo
+central — ver a run vermelha e abrir um log vazio.
+
+**O preço de arrumar foi perder o log das runs de hoje**: montar sobre `/opt/airflow/logs`
+esconde o que estava na camada do container, e recriar o container apagou. O que importava
+daquelas runs já estava transcrito aqui (os três disparos e os dois HTTP 409).
+
+`airflow tasks test` não serve para verificar isso — ele escreve só no stdout, sem arquivo de
+log. A verificação é pelo executor de verdade: `airflow tasks clear` de uma tarefa barata, e o
+log aparecendo em `infra/airflow/logs/dag_id=…/run_id=…/task_id=…`.

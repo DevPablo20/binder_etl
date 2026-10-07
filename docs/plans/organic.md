@@ -112,7 +112,7 @@ dimensão** com `last_seen_date` antigo — quem conta decide se inclui.
 | 12 | Tag de cadência (`Daily`/`Weekly`) somada à `Organic`; descoberta por tag também no Instagram, que hoje é declarado por id | a fazer |
 | 13 | DAG semanal (quarta, 01:00 e 02:00 SP) disparando as conexões de post e chamando o mesmo medallion | a fazer |
 | 14 | Marcação de impulsionado pelo join com o Meta Ads | a fazer |
-| 15 | Fechar o caso da CAIXA, cuja listagem de posts não completa | a fazer |
+| 15 | ~~Fechar o caso da CAIXA~~ | **fechado 07/10:** `page_size` 5 resolveu a extração; a página está dormente, não truncada (diário) |
 
 O passo 14 está mais perto do que o backlog supunha: o **Meta Ads já cai no lake**
 (`raw/airbyte/meta/`, 9 contas, com o stream `ads`), só não tem transformer. O
@@ -136,7 +136,7 @@ disparam e esperam, mas as conexões ainda têm cron no Airbyte (passo 9) e não
 |---|---------|-----------|
 | D1 | **Horizonte por métrica dentro do pipeline.** Métrica de insight de conteúdo antigo é resíduo, não desempenho, e cada métrica morre numa idade diferente (diário de 06/10). Hoje quem protege disso é o dashboard do cliente, por heurística; o lake entrega o número cru | Decidir onde mora: coluna de qualidade no silver (`lifetime_truncated_at` por conteúdo × métrica, detectada pela queda) e/ou horizonte por `platform` × métrica no gold, com "não medido" distinto de zero. Enquanto estiver aberta, todo consumidor repete a heurística |
 | D2 | **Revisão tardia das métricas da conta do Instagram.** O conector relê só o dia anterior e a Meta avisa revisão até 48h, então cada dia para de ser lido muito antes de parar de mudar | Medir a diferença entre a penúltima e a última leitura de cada dia. Mensurável: há fotos desde 29/09 e o cron principal (02:00 SP) não mudou. Ao medir, refazer a conta de quantas horas depois do fim do dia vem a última leitura |
-| D6 | **Conector próprio com filtro de data — reaberta.** O conector oficial não tem `start_date`, e 64% dos posts da CAIXA são de 2022 ou antes, faixa em que a Meta devolve resíduo (alcance 0 a 27). Hoje se paga ~3.300 chamadas por sync para buscar nada. A decisão de "não fazer conector próprio" foi tomada quando a única página era a Texaco, de 692 posts; a premissa mudou | Decidir depois de medir a CAIXA com `page_size` 5. Se nem assim a listagem completar, as opções são desmarcar `post_insights` nessa página (perde métrica por post, mantém dimensão e nível de página) ou o conector com filtro |
+| ~~D6~~ | ~~**Conector próprio com filtro de data**~~ | **Fechada em 07/10 sem precisar de conector:** com `page_size` 5 a CAIXA extraiu inteira em 41 min, numa tentativa. O `page_size` é a alavanca e o valor é **por página**, proporcional ao tamanho dela — Texaco 25, Loterias 10, CAIXA 5. Não há histórico a cortar, porque a extração completa. Se uma página maior que a CAIXA aparecer e 5 não bastar, a decisão reabre |
 | D4 | **Onde mora o horário depois da migração.** Com o disparo no Airflow, mudar hora de extração vira commit — bom para rastreabilidade, ruim para experimentar (a troca do cron de stories em 06/10 foi pelo painel) | Decidir ao fim do passo 9: aceitar o commit, ou ler o horário de uma Variable do Airflow |
 | ~~D5~~ | ~~**Teto do pool `airbyte_sync`**~~ | **Fechada em 07/10, com a premissa derrubada.** O pool **não** limita sync simultâneo e não tem como: o disparo segura o slot por um segundo e a espera em `reschedule` solta o slot entre os pokes. Com três páginas, os três jobs começaram no mesmo segundo. E não precisa limitar: a Texaco levou **4m00s com três syncs em paralelo**, dentro da faixa dela sozinha (2m53s a 5m46s), com load 2,74 em quatro núcleos e 15 GiB livres — sync é espera de rede, não CPU. Se um dia precisar, o lugar é o limite de concorrência do próprio Airbyte, não o Airflow |
 
@@ -328,3 +328,25 @@ mais namespace. O que precisa de cuidado é o `namespaceFormat`, e por uma razã
 que o curinga do `raw_path`: **ele é a única fonte do `page_id` em todo o pipeline do Facebook**
 (`page_id_from_path()` extrai do caminho do arquivo com regex). Namespace default esconde a
 página; namespace com nome em vez do id numérico grava `account_id` errado na gold, em silêncio.
+
+**07/10** — **CAIXA resolvida, e o diagnóstico anterior estava errado.** Com `page_size` 5 o
+sync completou em **41m02s, numa única tentativa**, 36.029 linhas. O escalonamento fecha a
+questão: Texaco 696 posts em 25, Loterias 1.302 em 10, CAIXA 5.148 em 5 — o valor é por
+página, proporcional ao tamanho. A D6 (conector próprio) fecha sem ser necessária.
+
+**O que eu vinha chamando de "a listagem da CAIXA não completa" não existia.** Depois do sync
+bem-sucedido, o post mais novo dela **continua 22/07/2026** — e a razão é outra: a página
+**está dormente**. Posts por mês: 18 a 68 de janeiro/2025 a maio/2026, 2 em junho, 20 em
+julho, **nenhum depois de 22/07**. E o `page_insights` dela, agora que chega, devolve **zero em
+tudo** nos dias 04 e 05/10 — views, alcance, interações, novos seguidores — com breakdown
+`{total: 0, paid: 0, unpaid: 0}`, para uma página de 4,7 milhões de seguidores.
+
+O zero vem da API, não do transform: no silver o `value` é 0 e o map de breakdown é
+explicitamente zerado. O que a parcial escondia era o **histórico antigo** (o post mais antigo
+foi de 2011-08-01 para 2011-01-12, e entraram 75 posts), não o recente — a paginação da
+listagem caminha para trás.
+
+Consequência para quem consome: a página do Facebook da CAIXA vai aparecer zerada, e **esse é
+o número certo**. Vale confirmar com quem cuida da página se ela deveria estar ativa — a
+atividade da marca parece ter ido para o Instagram, onde a conta `caixa` publicou stories em
+06/10.

@@ -113,13 +113,19 @@ O preço da descoberta é uma checagem: **conexão com tag `Organic` que nenhum 
 falha**. Sem ela, uma conexão criada no painel com o namespace errado fica invisível no lake
 para sempre, sem erro nenhum.
 
-### Concorrência: a restrição é CPU
+### Concorrência: a restrição é CPU, e o pool só vale para o medallion
 
-Dois pools. `airbyte_sync` limita syncs simultâneos — sync é trabalho de rede, então paralelismo
-rende, mas cada um sobe seus pods ao lado de um control plane que já ocupa 6 GiB. E
-`spark_medallion` com **um slot**, serializando o medallion de todas as plataformas: com
+`spark_medallion` com **um slot** serializa o medallion de todas as plataformas: com
 `master="local[*]"` em quatro núcleos, dois medallions simultâneos não dividem a máquina — os
-dois rastejam e ainda disputam a escrita das mesmas tabelas de `gold/organic/`.
+dois rastejam e ainda disputam a escrita das mesmas tabelas de `gold/organic/`. Esse pool
+funciona porque a tarefa de camada roda de ponta a ponta segurando o slot.
+
+**O pool não limita sync simultâneo, e não há como ele limitar.** A tarefa de disparo segura o
+slot pelo tempo de um `POST` — um segundo — e a espera em `reschedule` **solta** o slot entre os
+pokes, que é justamente o que a torna barata. Então N páginas disparam N syncs ao mesmo tempo,
+qualquer que seja o número de slots. Quem limita extração simultânea é o Airbyte, não o
+Airflow. Limitar pelo Airflow exigiria espera bloqueante (poke), trocando o problema pelo que a
+espera em `reschedule` existe para evitar.
 
 ### Verde não é o mesmo que atualizado
 
@@ -522,6 +528,24 @@ silver.
 anúncios. `reach` é único — nunca é a soma do alcance dos posts. No Facebook os dados chegam
 com uns 2 dias de atraso e `new_followers_organic` é a única separação orgânico × pago; no
 Instagram o último dia vem com `is_partial = true` até a releitura seguinte.
+
+### Orgânico × impulsionado: o que a fonte separa
+
+`metrics_scope` existe porque a resposta é diferente em cada nível, e misturar os dois numa
+soma é o erro mais fácil de cometer aqui.
+
+| Nível | Separa? | Por quê |
+|---|---|---|
+| Instagram, post | **sim**, a métrica já é orgânica | A API exclui a distribuição paga. Um carrossel com 88 mil de alcance total, dos quais 85 mil de anúncio, chega com 3 mil |
+| Facebook, página — **seguidores** | **sim** | `page_fan_adds_by_paid_non_paid_unique` traz os dois; o gold expõe `new_followers` e `new_followers_organic` |
+| Facebook, página — alcance, views, interações | não, só total | A página pode fazer milhões de views com alguns milhares orgânicas, e a API devolve só a soma |
+| Facebook, post | não, só total | O breakdown `is_from_ads` existe no Graph API, mas a lista de métricas é fixa no manifest do conector. Post impulsionado chega com as views de anúncio dentro |
+| Instagram, conta | não, só total | O `reach` do `user_insights` inclui anúncio e o conector não pede o breakdown |
+
+Onde a fonte não separa, o que dá para saber é **onde o número está contaminado**: o
+`effective_object_story_id` do criativo do Meta Ads tem o formato `{page_id}_{post_id}`, então
+um `LEFT JOIN` marca o post impulsionado e o gasto. Não é o split da métrica — é o aviso de
+que aquela linha não é desempenho orgânico.
 
 ### O que não fazer
 

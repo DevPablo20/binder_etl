@@ -26,9 +26,17 @@ from src.airbyte import client
 
 logger = logging.getLogger(__name__)
 
-# Concorrência. A restrição da máquina é CPU: sync é trabalho de rede e rende em paralelo, mas
-# o medallion roda `local[*]` e dois ao mesmo tempo não dividem quatro núcleos — além de
-# disputarem a escrita das mesmas tabelas de `gold/organic/`. Criados no `airflow-init`.
+# Concorrência. Criados no `airflow-init`.
+#
+# `spark_medallion` com um slot é o que importa: o medallion roda `local[*]` e dois ao mesmo
+# tempo não dividem quatro núcleos — além de disputarem a escrita das mesmas tabelas de
+# `gold/organic/`. Funciona porque a tarefa de camada segura o slot de ponta a ponta.
+#
+# `airbyte_sync` **não** limita sync simultâneo, e não tem como: o disparo segura o slot pelo
+# tempo de um POST, e a espera em `reschedule` solta o slot entre os pokes — que é o que a
+# torna barata. N páginas disparam N syncs, com qualquer número de slots. Medido com três
+# páginas: os três jobs começaram no mesmo segundo. Fica no disparo como teto nominal e para
+# dar um lugar onde mexer se um dia a espera virar bloqueante; quem limita de fato é o Airbyte.
 POOL_SYNC = "airbyte_sync"
 POOL_MEDALLION = "spark_medallion"
 

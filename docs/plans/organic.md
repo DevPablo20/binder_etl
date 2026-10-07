@@ -13,8 +13,8 @@ Facebook e Instagram orgânicos são **uma** iniciativa, não duas: compartilham
 
 ## Próxima ação
 
-Entrar com as demais páginas de Facebook antes de encerrar: hoje só a Texaco existe, e a
-iniciativa não deveria fechar sem o fan-out exercitado com mais de uma. Depois disso, passo 10.
+Passo 11: dividir as conexões por cadência. A iniciativa não encerra no passo 10 como estava
+previsto — o escopo cresceu em 07/10 com o requisito de monitoramento (seção abaixo).
 
 ## Objetivo
 
@@ -75,6 +75,50 @@ cron — o Airbyte não roda dois jobs da mesma conexão ao mesmo tempo.
 
 O passo 4 prova o padrão com uma conexão só; o 6 é o único com fan-out. Daí a ordem.
 
+## Mudança de escopo em 07/10: página diária, post semanal
+
+A equipe de monitoramento fechou os dois níveis, e eles separam **exatamente na linha do
+custo** — o que precisa ser diário é barato, o que é caro basta semanal.
+
+**Página, diário, em todas as contas das duas redes.** Curtidas, posts, seguidores, alcance e o
+que mais permita acompanhar o movimento da página. São 1 a 2 chamadas por página; `page` e
+`page_insights` do Facebook, `users` e `user_insights` do Instagram.
+
+**Post, semanal, recorte quarta → terça.** Interações, comentários, curtidas,
+compartilhamentos, alcance. É onde está o custo: uma chamada de insights **por post**, em todo
+sync, sem incremental no conector.
+
+O recorte cai de graça na mecânica que já existe: sync na quarta às 01:00 fecha o
+`snapshot_date` na terça (corte das 06:00), e o delta entre duas quartas cobre quarta → terça.
+O silver marca `gap_days` 7 e o gold expõe `days_covered` 7 — a coluna existe para isso.
+**Nada muda na matemática do medallion**, que é agnóstica ao intervalo entre fotos.
+
+Efeito colateral a documentar, não a corrigir: o `content_daily` passa a ter grão semanal para
+post de Facebook e de Instagram (uma linha por post por foto), com `days_covered` dizendo o
+alcance. O nome da tabela fica um pouco largo; renomear a gold custa mais do que a confusão
+que evita.
+
+**Contagem de posts da semana** sai do `published_date` da dimensão `content`, agrupando por
+semana que começa na quarta — melhor que um contador de página, porque dá o número da semana
+em vez do acumulado. Duas ressalvas: a contagem só conhece posts até o último sync de `post`
+(com cadência semanal, atrasa até 7 dias), e post apagado sai da listagem mas **permanece na
+dimensão** com `last_seen_date` antigo — quem conta decide se inclui.
+
+### Passos
+
+| # | Passo | Status |
+|---|---|---|
+| 11 | Dividir cada conexão em duas: página (diária) e post (semanal, quarta). Stories seguem diários — insight de story vive 24h | a fazer |
+| 12 | Tag de cadência (`Daily`/`Weekly`) somada à `Organic`; descoberta por tag também no Instagram, que hoje é declarado por id | a fazer |
+| 13 | DAG semanal (quarta, 01:00 e 02:00 SP) disparando as conexões de post e chamando o mesmo medallion | a fazer |
+| 14 | Marcação de impulsionado pelo join com o Meta Ads | a fazer |
+| 15 | Fechar o caso da CAIXA, cuja listagem de posts não completa | a fazer |
+
+O passo 14 está mais perto do que o backlog supunha: o **Meta Ads já cai no lake**
+(`raw/airbyte/meta/`, 9 contas, com o stream `ads`), só não tem transformer. O
+`effective_object_story_id` do criativo tem o formato `{page_id}_{post_id}`, então um
+`LEFT JOIN` marca quais posts foram impulsionados e quanto gastaram.
+
 ## Onde está o desenho
 
 - Fluxo, regras de cada camada, conservação e **orquestração**: `docs/architecture.md`.
@@ -92,8 +136,9 @@ disparam e esperam, mas as conexões ainda têm cron no Airbyte (passo 9) e não
 |---|---------|-----------|
 | D1 | **Horizonte por métrica dentro do pipeline.** Métrica de insight de conteúdo antigo é resíduo, não desempenho, e cada métrica morre numa idade diferente (diário de 06/10). Hoje quem protege disso é o dashboard do cliente, por heurística; o lake entrega o número cru | Decidir onde mora: coluna de qualidade no silver (`lifetime_truncated_at` por conteúdo × métrica, detectada pela queda) e/ou horizonte por `platform` × métrica no gold, com "não medido" distinto de zero. Enquanto estiver aberta, todo consumidor repete a heurística |
 | D2 | **Revisão tardia das métricas da conta do Instagram.** O conector relê só o dia anterior e a Meta avisa revisão até 48h, então cada dia para de ser lido muito antes de parar de mudar | Medir a diferença entre a penúltima e a última leitura de cada dia. Mensurável: há fotos desde 29/09 e o cron principal (02:00 SP) não mudou. Ao medir, refazer a conta de quantas horas depois do fim do dia vem a última leitura |
+| D6 | **Conector próprio com filtro de data — reaberta.** O conector oficial não tem `start_date`, e 64% dos posts da CAIXA são de 2022 ou antes, faixa em que a Meta devolve resíduo (alcance 0 a 27). Hoje se paga ~3.300 chamadas por sync para buscar nada. A decisão de "não fazer conector próprio" foi tomada quando a única página era a Texaco, de 692 posts; a premissa mudou | Decidir depois de medir a CAIXA com `page_size` 5. Se nem assim a listagem completar, as opções são desmarcar `post_insights` nessa página (perde métrica por post, mantém dimensão e nível de página) ou o conector com filtro |
 | D4 | **Onde mora o horário depois da migração.** Com o disparo no Airflow, mudar hora de extração vira commit — bom para rastreabilidade, ruim para experimentar (a troca do cron de stories em 06/10 foi pelo painel) | Decidir ao fim do passo 9: aceitar o commit, ou ler o horário de uma Variable do Airflow |
-| D5 | **Teto do pool `airbyte_sync`.** 2 slots agora; a RAM aguentaria ~5, a CPU (4 núcleos) não | Na terceira conexão de página: medir a duração de um sync sozinho contra dois simultâneos. Só subir para 3 se o tempo individual não piorar |
+| ~~D5~~ | ~~**Teto do pool `airbyte_sync`**~~ | **Fechada em 07/10, com a premissa derrubada.** O pool **não** limita sync simultâneo e não tem como: o disparo segura o slot por um segundo e a espera em `reschedule` solta o slot entre os pokes. Com três páginas, os três jobs começaram no mesmo segundo. E não precisa limitar: a Texaco levou **4m00s com três syncs em paralelo**, dentro da faixa dela sozinha (2m53s a 5m46s), com load 2,74 em quatro núcleos e 15 GiB livres — sync é espera de rede, não CPU. Se um dia precisar, o lugar é o limite de concorrência do próprio Airbyte, não o Airflow |
 
 ## Decisões fechadas que o código ainda não reflete
 

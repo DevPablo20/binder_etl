@@ -18,11 +18,14 @@ binder_etl/
 ├── airbyte/README.md        # instalação abctl + conexões TikTok, Facebook Pages e Instagram
 ├── dags/
 │   ├── tiktok/tiktok_daily.py
-│   ├── facebook_organic/facebook_organic_daily.py
-│   ├── organic_tasks.py     # tarefas compartilhadas: dispara, espera, consolida
+│   ├── organic_tasks.py     # tarefas compartilhadas + `organic_flow`, o DAG inteiro
+│   ├── facebook_organic/
+│   │   ├── facebook_organic_daily.py    # nível de página
+│   │   └── facebook_organic_weekly.py   # nível de post, quarta
 │   └── instagram_organic/
-│       ├── instagram_organic_daily.py
-│       └── instagram_stories_daily.py   # stories têm extração e DAG próprios
+│       ├── instagram_organic_daily.py   # nível de conta
+│       ├── instagram_organic_weekly.py  # nível de mídia, quarta
+│       └── instagram_stories_daily.py   # stories, diário por obrigação
 ├── src/
 │   ├── config/settings.py   # MinIO e demais settings
 │   ├── spark_session.py     # Spark + Delta + S3A
@@ -227,13 +230,15 @@ Mesmo molde do `facebook_organic` e o mesmo registro: `TRANSFORMERS` e `PLATFORM
 
 DAG `instagram_organic_daily` às 08:00 UTC.
 
-## Plataformas orgânicas: um DAG por extração
+## Plataformas orgânicas: um DAG por grupo de conexões
 
-Um DAG por conexão de extração, não por plataforma: o Instagram tem dois (principal e stories)
-porque são duas conexões com horários diferentes, e os dois chamam o mesmo medallion de
-plataforma. O Facebook tem um, que dispara em paralelo quantas conexões de página existirem e
-consolida tudo numa passada — o curinga do `raw_path` é o que permite isso. O desenho e o porquê
-estão em [architecture.md](architecture.md#orquestração-airflow--airbyte).
+Cinco DAGs, um por grupo de conexões — não um por plataforma. O grupo é (nível, cadência):
+página diária, post semanal, conta diária, mídia semanal, stories diários. Todos são a mesma
+função, `organic_flow`, com coordenadas diferentes, e todos chamam o medallion da plataforma
+inteira: o curinga do `raw_path` é o que permite consolidar N páginas numa passada.
+
+Nenhum id de conexão no código — a descoberta é por tag. O desenho e o porquê estão em
+[architecture.md](architecture.md#orquestração-airflow--airbyte).
 
 ## Plataformas orgânicas: código compartilhado
 

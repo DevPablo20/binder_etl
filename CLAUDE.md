@@ -115,8 +115,17 @@ sumiu. Deletados chegam explicitamente com `*_STATUS_DELETE` em `secondary_statu
   depois. N medallions reprocessariam todas as páginas e disputariam a mesma partição da gold.
   Medallion roda serializado (pool de um slot): `local[*]` em quatro núcleos não divide.
 - **Conexão de página nova nasce com `namespaceFormat = facebook_organic/{page_id}`.** Com o
-  namespace default os arquivos caem fora do curinga e a página desaparece do lake sem erro.
-  Conexão orgânica leva a tag `Organic` — é por ela que o DAG do Facebook descobre as páginas.
+  namespace default os arquivos caem fora do curinga e a página desaparece do lake sem erro —
+  e no Facebook esse caminho é a **única** fonte do `page_id` (`page_id_from_path`), então
+  namespace com nome em vez do id numérico grava `account_id` errado na gold, em silêncio.
+- **Conexão orgânica leva a tag `Organic` e exatamente uma tag de condutor** (`daily`,
+  `weekly` ou `stories`), que é como o DAG a encontra — nenhum id de conexão mora no
+  repositório. Sem condutor, com dois, ou em namespace que nenhum DAG dirige, a checagem
+  `assert_connections_are_claimed` falha. Sem ela a conexão nunca extrairia, em silêncio.
+- **`page_size` do conector Facebook Pages é por página, proporcional ao tamanho dela.** Valor
+  alto demais faz a Meta recusar a resposta ("too large or timed out") e, como os streams são
+  full refresh, cada tentativa recomeça do zero — o job entra em retry infinito. Medido: 696
+  posts em 25, 2.194 em 10, 5.239 em 5.
 - **Métrica de insight de conteúdo antigo é resíduo, não zero real.** Fora da janela de
   retenção a Meta responde um número minúsculo em vez de erro, o corte não é o aniversário do
   conteúdo e cada métrica morre numa idade diferente. Derive o horizonte por plataforma **e por

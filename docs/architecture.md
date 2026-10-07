@@ -69,11 +69,26 @@ Cada extração tem um DAG, e o DAG é dono da sequência: **dispara a conexão 
 o job terminar, monta o medallion.** Horário combinado não é dependência — se a extração atrasa
 ou falha, um medallion agendado por relógio roda sobre o raw de ontem e **termina verde**.
 
-| DAG | Dispara | Consolida |
+| DAG | Dispara | Quando |
 |---|---|---|
-| `facebook_organic_daily` | toda conexão de página, em paralelo | `facebook_organic`, uma vez |
-| `instagram_organic_daily` | a conexão principal do Instagram | `instagram_organic` |
-| `instagram_stories_daily` | a conexão de stories | `instagram_organic` |
+| `facebook_organic_daily` | as conexões de página, em paralelo | 01:00 |
+| `instagram_organic_daily` | a conexão de conta | 02:00 |
+| `instagram_stories_daily` | a conexão de stories | 09:30 |
+| `facebook_organic_weekly` | as conexões de post, em paralelo | quarta, 01:00 |
+| `instagram_organic_weekly` | a conexão de mídia | quarta, 02:00 |
+
+Os cinco são a mesma função (`organic_flow`) com coordenadas diferentes: muda qual grupo de
+conexões dirigem, em que horário rodam e qual medallion chamam.
+
+**A cadência é decisão de custo, não de gosto.** Nível de página são 1 a 2 chamadas de API;
+nível de post é **uma chamada de insights por post, em todo sync**, e nenhum stream do conector
+tem incremental. Diário onde é barato, semanal onde não é. Stories ficam diários por obrigação:
+o insight só existe enquanto o story está vivo.
+
+**O recorte semanal cai da mecânica da foto.** O sync da quarta à 01:00 fecha o `snapshot_date`
+na terça (corte das 06:00), e o delta entre duas quartas cobre quarta → terça. O silver marca
+`gap_days` 7 e o gold expõe `days_covered` 7 — a matemática do delta sempre foi agnóstica ao
+intervalo entre fotos.
 
 **Disparar e aguardar são duas tarefas.** O disparo guarda o id do job; a espera lê esse id e
 faz o poll. Numa tarefa só, o retry da espera dispara um segundo sync. E o disparo pode devolver
@@ -104,14 +119,19 @@ e o bronze acumula de qualquer jeito.
 
 ### De onde sai a lista de conexões
 
-As conexões do Instagram são **declaradas por id**: as duas compartilham o namespace
-`instagram_organic` e nenhum metadado as separa. As de página do Facebook são **descobertas**
-pela API, por tag `Organic` mais `namespaceFormat` começando com `facebook_organic/` — página
-nova entra sem commit, e o critério é exatamente o que o curinga do transformer depende.
+**Nenhum id de conexão está escrito no repositório.** Cada DAG descobre as suas por duas
+coordenadas na API do Airbyte:
 
-O preço da descoberta é uma checagem: **conexão com tag `Organic` que nenhum DAG reivindica
-falha**. Sem ela, uma conexão criada no painel com o namespace errado fica invisível no lake
-para sempre, sem erro nenhum.
+- a tag **`Organic`**, que marca o escopo — conexão de mídia paga não tem;
+- **uma** tag de condutor, dizendo qual DAG dirige: `daily`, `weekly` ou `stories`.
+
+Mais o prefixo de `namespaceFormat`, que no Facebook é também de onde sai o `page_id`. Por isso
+filtrar por ele é o mesmo critério que o curinga do transformer usa para ler: o que o DAG
+dispara e o que o medallion consolida não podem divergir.
+
+Página nova entra sem commit. O preço é uma checagem: **conexão `Organic` ativa sem condutor,
+com dois, ou num namespace que nenhum DAG dirige, falha**. Sem ela, uma conexão criada no painel
+e esquecida nunca extrairia, em silêncio — e sem os crons do Airbyte não há rede por baixo.
 
 ### Concorrência: a restrição é CPU, e o pool só vale para o medallion
 

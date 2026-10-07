@@ -1,31 +1,29 @@
-"""Instagram orgânico: extração da conexão principal e medallion em cima dela.
+"""Instagram orgânico, nível de conta: extração diária e medallion em cima dela.
 
-Prova a forma que os três DAGs do orgânico seguem, com uma conexão só. As tarefas
-compartilhadas estão em `organic_tasks.py`.
+`users`, `user_insights` e `user_lifetime_insights` — seguidores, alcance e novos seguidores
+da conta, por dia. Um token vê todas as contas, então aqui é uma conexão só; o fan-out existe
+no Facebook, onde cada página tem a sua.
 """
 import pendulum
 from airflow import DAG
 from organic_tasks import (
+    DAILY_TAG,
     DEFAULT_ARGS,
-    INSTAGRAM_MAIN_CONNECTION,
-    chain_medallion,
-    trigger_sync,
-    wait_for_sync,
+    INSTAGRAM_NAMESPACE,
+    organic_flow,
 )
 
 PLATFORM = "instagram_organic"
 
-# 02:00 São Paulo: antes do corte das 06:00 que define o `snapshot_date`, então a foto fecha
-# o dia anterior. O schedule é lido no fuso do `start_date`, não em UTC.
+# 02:00 São Paulo: antes do corte das 06:00, então a foto fecha o dia anterior.
 with DAG(
     dag_id=f"{PLATFORM}_daily",
     default_args=DEFAULT_ARGS,
-    description="Instagram orgânico: dispara o Airbyte, aguarda o job, monta o medallion",
+    description="Instagram, nível de conta: dispara, aguarda, monta o medallion",
     schedule="0 2 * * *",
     start_date=pendulum.datetime(2026, 1, 1, tz="America/Sao_Paulo"),
     catchup=False,
     max_active_runs=1,
-    tags=[PLATFORM, "medallion", "organic"],
+    tags=[PLATFORM, "medallion", "organic", "daily"],
 ) as dag:
-    job_id = trigger_sync(INSTAGRAM_MAIN_CONNECTION)
-    chain_medallion(wait_for_sync(job_id), PLATFORM)
+    organic_flow(DAILY_TAG, INSTAGRAM_NAMESPACE, PLATFORM)

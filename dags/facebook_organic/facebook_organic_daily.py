@@ -1,26 +1,20 @@
-"""Facebook orgânico: extração de todas as páginas em paralelo e **um** medallion depois.
+"""Facebook orgânico, nível de página: extração diária e medallion em cima dela.
 
-O fan-out é da extração, não do medallion. Cada página escreve em
-`raw/airbyte/facebook_organic/{page_id}/{stream}` e o transformer lê com curinga
-(`facebook_organic/*/{stream}`), então um medallion já consolida todas as páginas numa
-passada. Um medallion por página reprocessaria todas as páginas de qualquer forma e N runs
-disputariam a partição `platform='facebook'` da gold compartilhada.
+`page` e `page_insights` são 1 a 2 chamadas por página — o oposto do nível de post. E o
+`page_insights` só serve os **2 últimos dias**, com ~2 dias de atraso: duas falhas seguidas
+na mesma página abrem buraco permanente. Por isso este é o DAG mais crítico do orgânico.
 
-As conexões não estão escritas aqui: saem da API por tag e prefixo de namespace, então página
-nova entra sem commit. O preço é a checagem de órfã — conexão `Organic` que nenhum DAG dispara
-falha o DAG.
+As conexões não estão escritas aqui: saem da API por tag `Organic` + `daily` e prefixo de
+namespace. Página nova entra sem commit; conexão sem condutor falha a checagem.
 """
 import pendulum
 from airflow import DAG
 from organic_tasks import (
+    DAILY_TAG,
     DEFAULT_ARGS,
-    assert_no_orphan_connections,
-    chain_medallion,
-    discover_facebook_connections,
-    require_all_pages_extracted,
-    require_any_fresh_extraction,
-    trigger_sync,
-    wait_for_sync,
+    FACEBOOK_NAMESPACE,
+    assert_connections_are_claimed,
+    organic_flow,
 )
 
 PLATFORM = "facebook_organic"
@@ -31,25 +25,15 @@ PLATFORM = "facebook_organic"
 with DAG(
     dag_id=f"{PLATFORM}_daily",
     default_args=DEFAULT_ARGS,
-    description="Facebook Pages orgânico: dispara cada página, aguarda, monta o medallion",
+    description="Facebook Pages, nível de página: dispara, aguarda, monta o medallion",
     schedule="0 1 * * *",
     start_date=pendulum.datetime(2026, 1, 1, tz="America/Sao_Paulo"),
     catchup=False,
     max_active_runs=1,
-    tags=[PLATFORM, "medallion", "organic"],
+    tags=[PLATFORM, "medallion", "organic", "daily"],
 ) as dag:
-    connection_ids = discover_facebook_connections()
+    organic_flow(DAILY_TAG, FACEBOOK_NAMESPACE, PLATFORM)
 
-    job_ids = trigger_sync.expand(connection_id=connection_ids)
-    waits = wait_for_sync.expand(job_id=job_ids)
-
-    gate = require_any_fresh_extraction()
-    waits >> gate
-
-    # A gold do dia sai com o que extraiu; a run só fica vermelha depois, se faltou alguém.
-    # Sem a segunda checagem, página defasada vira run verde — ver `require_all_pages_extracted`.
-    chain_medallion(gate, PLATFORM) >> require_all_pages_extracted()
-
-    # A checagem de órfã não é pré-requisito do medallion: ela denuncia conexão esquecida,
-    # não impede a gold do dia. Depende só da descoberta, que é quem já lista as conexões.
-    assert_no_orphan_connections(connection_ids)
+    # Só um DAG precisa vigiar o inventário inteiro de conexões, e é este — o que roda
+    # primeiro no dia.
+    assert_connections_are_claimed()

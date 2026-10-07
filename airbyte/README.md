@@ -237,15 +237,29 @@ Use values from `.env`:
 
 MVP: run sync manually in Airbyte. The Airflow DAG `sync_raw` task is a placeholder until `AirbyteTriggerSyncOperator` is wired.
 
-## Facebook Pages → MinIO connection (`facebook_organic`)
+## Facebook Pages → MinIO connections (`facebook_organic`)
 
-One connection **per page**, all landing under the same prefix. The official connector is
-used as-is (no fork): its metric list is fixed in the connector manifest.
+**Two connections per page**, split by cadence, both landing under the same prefix. The
+official connector is used as-is (no fork): its metric list is fixed in the connector manifest.
+
+| Connection | Streams | Driven by |
+|------------|---------|-----------|
+| `… (página)` | `page`, `page_insights` | `facebook_organic_daily`, 01:00 America/Sao_Paulo |
+| `… (posts)` | `post`, `post_insights` | `facebook_organic_weekly`, Wednesday 01:00 |
+
+The split is a cost decision. Page level is one or two API calls; post level is **one insights
+call per post, on every sync**, with no incremental mode — a page with five thousand posts
+costs forty minutes. Daily where it is cheap, weekly where it is not.
 
 ### Source
 
 - Connector: **Facebook Pages** (Graph API v24.0)
-- `page_id`: one page per connection; long-lived Page access token
+- `page_id`: one page per source; long-lived Page access token
+- **`page_size` is per page, proportional to its size.** The connector dies with *"Facebook
+  could not return the requested data because the response was too large or timed out"* when
+  the value is too high for the page, and every retry restarts from zero because the streams
+  are full refresh. Measured: 696 posts at 25, 2,194 at 10, 5,239 at 5. Start a big page low.
+- Both connections of a page share one source.
 
 ### Destination
 
@@ -279,10 +293,23 @@ cron behind it any more — a DAG that does not run means no extraction that day
 "Manual" is the *schedule*. Never set `status: inactive` — that disables the connection for the
 API trigger too, which is the one thing still expected to work.
 
-**Page connections are discovered, not listed.** `facebook_organic_daily` takes every active
-connection tagged `Organic` whose `namespaceFormat` starts with `facebook_organic/`, so a new
-page needs no code change — and a connection tagged `Organic` that no DAG triggers fails the
-DAG's orphan check, by design.
+### Tags: how a DAG finds its connections
+
+No connection id is written in the repo. Each DAG discovers its own by two coordinates:
+
+- **`Organic`** — the scope tag. Paid-media connections do not carry it.
+- **one driver tag**, saying which DAG drives it: **`daily`**, **`weekly`** or **`stories`**.
+  (`stories` is not a cadence; it is the third group, needed because the three Instagram
+  connections share a namespace and cadence alone cannot separate account from stories.)
+
+Plus the `namespaceFormat` prefix, which is also where the Facebook `page_id` comes from.
+
+So a new page needs **no code change**: create the source, create the two connections with the
+right namespace and tags, and the DAGs pick them up. The price is a check —
+`assert_connections_are_claimed` fails the daily Facebook run if any active `Organic`
+connection has no driver tag, has two, or sits in a namespace no DAG drives. Without it, a
+connection created in the UI and forgotten would never extract, silently, now that the Airbyte
+crons are off.
 
 ## Instagram → MinIO connections (`instagram_organic`)
 
@@ -294,14 +321,18 @@ media type are fixed in its manifest.
 Two connections write to the same destination, bucket `raw`, **path format
 `airbyte/instagram_organic/{stream}`**:
 
-| Connection | Streams | Schedule (Quartz cron) |
-|------------|---------|------------------------|
-| main | `users`, `user_insights`, `user_lifetime_insights`, `media`, `media_insights` | manual — `instagram_organic_daily` triggers it at 02:00 America/Sao_Paulo |
-| stories | `stories`, `story_insights` | manual — `instagram_stories_daily` triggers it at 09:30 America/Sao_Paulo |
+| Connection | Streams | Driven by |
+|------------|---------|-----------|
+| `… (conta)` | `users`, `user_insights`, `user_lifetime_insights` | `instagram_organic_daily`, 02:00 America/Sao_Paulo |
+| `… (mídia)` | `media`, `media_insights` | `instagram_organic_weekly`, Wednesday 02:00 |
+| `… Stories` | `stories`, `story_insights` | `instagram_stories_daily`, 09:30 America/Sao_Paulo |
 
-Both are declared by id in `dags/organic_tasks.py` — they share the namespace
-`instagram_organic`, so discovery cannot tell them apart. Same note as the Facebook section
-above: the hour lives in the DAG, and `inactive` is not the same as manual.
+Same cost split as Facebook: account level daily, media level weekly. Stories stay daily and
+**can never be weekly** — a story's insights only exist while it is alive.
+
+All three share the namespace `instagram_organic`, so the namespace alone cannot tell them
+apart; the driver tag does. Same note as the Facebook section above: the hour lives in the DAG,
+and `inactive` is not the same as manual.
 
 Stories get their own connection because story metrics only exist while the story is live
 (24h): once the story expires, its numbers are gone for good, so whatever the last reading

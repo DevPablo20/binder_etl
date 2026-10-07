@@ -13,8 +13,9 @@ Facebook e Instagram orgânicos são **uma** iniciativa, não duas: compartilham
 
 ## Próxima ação
 
-Passo 11: dividir as conexões por cadência. A iniciativa não encerra no passo 10 como estava
-previsto — o escopo cresceu em 07/10 com o requisito de monitoramento (seção abaixo).
+Nada de orgânico até o ETL de Facebook Marketing existir — o passo 14 (marcação de
+impulsionado) depende do transformer do Meta Ads. Até lá, o que resta é observar: o primeiro
+ciclo diário na estrutura nova é 08/10, e o primeiro semanal é 14/10.
 
 ## Objetivo
 
@@ -108,10 +109,10 @@ dimensão** com `last_seen_date` antigo — quem conta decide se inclui.
 
 | # | Passo | Status |
 |---|---|---|
-| 11 | Dividir cada conexão em duas: página (diária) e post (semanal, quarta). Stories seguem diários — insight de story vive 24h | a fazer |
-| 12 | Tag de cadência (`Daily`/`Weekly`) somada à `Organic`; descoberta por tag também no Instagram, que hoje é declarado por id | a fazer |
-| 13 | DAG semanal (quarta, 01:00 e 02:00 SP) disparando as conexões de post e chamando o mesmo medallion | a fazer |
-| 14 | Marcação de impulsionado pelo join com o Meta Ads | a fazer |
+| 11 | Dividir cada conexão em duas: página (diária) e post (semanal, quarta). Stories seguem diários — insight de story vive 24h | feito 07/10 |
+| 12 | Tags de condutor (`daily`/`weekly`/`stories`) somadas à `Organic`; descoberta por tag em todos os DAGs, sem id no repositório | feito 07/10 |
+| 13 | DAGs semanais (quarta, 01:00 e 02:00 SP) disparando as conexões de post e chamando o mesmo medallion | feito 07/10 |
+| 14 | Marcação de impulsionado pelo join com o Meta Ads | **a fazer depois do ETL de Facebook Marketing** — decisão do Pablo em 07/10: a marcação depende do transformer do Meta Ads existir |
 | 15 | ~~Fechar o caso da CAIXA~~ | **fechado 07/10:** `page_size` 5 resolveu a extração; a página está dormente, não truncada (diário) |
 
 O passo 14 está mais perto do que o backlog supunha: o **Meta Ads já cai no lake**
@@ -377,3 +378,36 @@ erro de madrugada.
 O que ela não pega, de propósito: sync que termina bem e escreve pouco. Para isso seria preciso
 exigir foto do dia por `page_id` no lake, ao custo de uma leitura Spark. A evidência de 07/10 é
 que job bem-sucedido entregou dado e job cancelado falhou a espera.
+
+**07/10** — **Passos 11 a 13 feitos: a estrutura por cadência está no ar.** Nove conexões
+`Organic` ativas, cada uma com exatamente um condutor:
+
+| DAG | Conexões | Horário |
+|---|---|---|
+| `facebook_organic_daily` | 3 de página | 01:00 |
+| `facebook_organic_weekly` | 3 de posts | quarta, 01:00 |
+| `instagram_organic_daily` | 1 de conta | 02:00 |
+| `instagram_organic_weekly` | 1 de mídia | quarta, 02:00 |
+| `instagram_stories_daily` | 1 de stories | 09:30 |
+
+As conexões antigas combinadas ficaram em `status: inactive`, como rollback — e invisíveis para
+a descoberta e para a checagem, que só olham ativas.
+
+Os cinco DAGs são a mesma função (`organic_flow`); o que muda é a coordenada. **Nenhum id de
+conexão mora mais no repositório** — os dois do Instagram, que eram declarados, saíram. A
+checagem virou mais forte: em vez de "alguém reivindica esta conexão?", agora é "toda conexão
+`Organic` ativa tem exatamente um condutor e um namespace com DAG?".
+
+Três coisas que o caminho ensinou:
+
+- **`stories` precisou ser um condutor, não uma cadência.** As três conexões de Instagram
+  compartilham o namespace `instagram_organic`, então cadência não separa conta de stories —
+  as duas seriam `daily`. A tag diz *qual DAG dirige*, que é a pergunta que a descoberta faz.
+- **O dry run pagou por si.** A primeira versão do script de divisão ia desativar a conexão de
+  stories junto com as outras, porque a regra "divide e desativa" não previa a exceção. Rodar
+  em modo de listagem antes mostrou isso sem custo.
+- **`selectedFields: []` no GET significa "todos os campos", e o POST recusa como "nenhum".**
+  O `user_insights` e o `user_lifetime_insights` caem nesse caso; a criação falhou com
+  `No fields selected for stream user_insights` **depois** de a conexão antiga já ter sido
+  desativada, deixando o Instagram diário sem conexão por alguns minutos. A correção é omitir
+  a chave quando vem vazia. Numa próxima migração, criar tudo antes de desativar nada.

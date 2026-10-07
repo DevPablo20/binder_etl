@@ -346,7 +346,12 @@ explicitamente zerado. O que a parcial escondia era o **histórico antigo** (o p
 foi de 2011-08-01 para 2011-01-12, e entraram 75 posts), não o recente — a paginação da
 listagem caminha para trás.
 
-Consequência para quem consome: a página do Facebook da CAIXA vai aparecer zerada, e **esse é
-o número certo**. Vale confirmar com quem cuida da página se ela deveria estar ativa — a
-atividade da marca parece ter ido para o Instagram, onde a conta `caixa` publicou stories em
-06/10.
+**Confirmado pelo Pablo: a página está parada de propósito, por causa das eleições e do
+período defeso.** Então a página do Facebook da CAIXA aparece zerada no lake e **esse é o
+número certo** — não há nada a corrigir no pipeline.
+
+Isso tem uma consequência para a checagem por página que ficou adiada: ela precisa distinguir
+**sem foto** (falha de extração, problema) de **foto com zero** (página quieta de verdade, não
+problema). A checagem como proposta já faz isso — ela exige que exista foto do dia, não que
+haja atividade —, mas é a diferença que importa quando alguém for alertar sobre "página ficou
+quieta".

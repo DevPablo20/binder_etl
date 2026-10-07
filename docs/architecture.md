@@ -141,6 +141,18 @@ reprocessamento fora do horário do sync; a pergunta que esta camada pode respon
 lake extraiu chegou à ponta?*. Vale para o `content_daily`, cujo grão é a foto diária — fica de
 fora o `account_daily`, cuja data é a da métrica na fonte e atrasa por desenho.
 
+A terceira existe porque as duas primeiras são **globais** e, com fan-out, a falha é **por
+página**: um DAG com três páginas em que só uma extraiu tem silver cheio, gold com a foto do
+dia e todas as folhas verdes. `require_all_pages_extracted` fecha isso com o limiar oposto ao
+do gate e na outra ponta do grafo — o gate deixa passar se **alguma** extraiu, para a gold do
+dia sair; a checagem, depois da gold, falha a run se **alguma** ficou de fora.
+
+Ela pergunta pela extração, não pela métrica. Página legitimamente quieta entrega foto com
+zero, e isso não é problema; problema é não ter foto. Alarmar por métrica zerada faria a
+checagem gritar todo dia numa página parada de propósito, e alerta que grita sempre ninguém
+olha. Nenhuma extração mapeada também falha: "tudo bem porque nada aconteceu" é o mesmo erro
+silencioso visto do outro lado.
+
 ## Existência de objeto
 
 Deletados chegam explicitamente em `secondary_status` — `CAMPAIGN_STATUS_DELETE`,

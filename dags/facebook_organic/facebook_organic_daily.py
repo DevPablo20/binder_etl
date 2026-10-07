@@ -17,6 +17,7 @@ from organic_tasks import (
     assert_no_orphan_connections,
     chain_medallion,
     discover_facebook_connections,
+    require_all_pages_extracted,
     require_any_fresh_extraction,
     trigger_sync,
     wait_for_sync,
@@ -45,7 +46,9 @@ with DAG(
     gate = require_any_fresh_extraction()
     waits >> gate
 
-    chain_medallion(gate, PLATFORM)
+    # A gold do dia sai com o que extraiu; a run só fica vermelha depois, se faltou alguém.
+    # Sem a segunda checagem, página defasada vira run verde — ver `require_all_pages_extracted`.
+    chain_medallion(gate, PLATFORM) >> require_all_pages_extracted()
 
     # A checagem de órfã não é pré-requisito do medallion: ela denuncia conexão esquecida,
     # não impede a gold do dia. Depende só da descoberta, que é quem já lista as conexões.

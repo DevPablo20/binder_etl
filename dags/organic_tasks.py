@@ -44,8 +44,10 @@ POOL_MEDALLION = "spark_medallion"
 SYNC_TIMEOUT = timedelta(hours=2)
 POKE_INTERVAL_SECONDS = 60
 
-# O gate conta as instâncias desta tarefa, então o nome precisa casar com o `task_id` real.
+# As checagens contam as instâncias destas tarefas, então os nomes precisam casar com os
+# `task_id` reais.
 WAIT_TASK_ID = "wait_for_sync"
+DISCOVER_TASK_ID = "discover_facebook_connections"
 
 # Conexões declaradas por id. As duas do Instagram compartilham o `namespaceFormat`
 # `instagram_organic` e nenhum metadado as separa — descoberta não resolve.
@@ -119,6 +121,39 @@ def discover_facebook_connections() -> list[str]:
     return [connection["connectionId"] for connection in connections]
 
 
+def _extraction_outcome() -> tuple[list, list]:
+    """As esperas desta run, separadas em sucesso e falha, com o nome da conexão quando dá.
+
+    Lê o estado das instâncias de `wait_for_sync`, não XCom e não o Airbyte. XCom de tarefa
+    mapeada que falhou não existe, e perguntar ao Airbyte o último job de cada conexão
+    responderia à pergunta errada: um job que terminou bem **ontem** também é "succeeded". O
+    que importa é o que esta run conseguiu.
+    """
+    context = get_current_context()
+    waits = [
+        instance
+        for instance in context["dag_run"].get_task_instances()
+        if instance.task_id == WAIT_TASK_ID
+    ]
+
+    # O `map_index` segue a ordem da descoberta, então dá para nomear quem falhou. Se o XCom
+    # não estiver lá (descoberta falhou, DAG sem fan-out), o índice sozinho já serve.
+    try:
+        descobertas = context["ti"].xcom_pull(task_ids=DISCOVER_TASK_ID) or []
+    except Exception:  # noqa: BLE001 - nomear é conveniência, não pode derrubar a checagem
+        descobertas = []
+
+    def nome(instance) -> str:
+        i = instance.map_index
+        if 0 <= i < len(descobertas):
+            return f"{descobertas[i]} (índice {i})"
+        return f"índice {i}" if i >= 0 else "conexão única"
+
+    ok = [i for i in waits if i.state == TaskInstanceState.SUCCESS]
+    falhas = [(i, nome(i), i.state) for i in waits if i.state != TaskInstanceState.SUCCESS]
+    return ok, falhas
+
+
 @task(trigger_rule=TriggerRule.ALL_DONE)
 def require_any_fresh_extraction() -> None:
     """Deixa o medallion seguir se **alguma** página extraiu; falha se nenhuma.
@@ -128,35 +163,70 @@ def require_any_fresh_extraction() -> None:
     Mas se nenhuma extraiu, rodar o medallion só reescreveria a gold de ontem — e é
     exatamente esse "verde sem dado novo" que esta iniciativa existe para matar.
 
-    Conta o estado das instâncias de `wait_for_sync` desta run, não XCom e não o Airbyte.
-    XCom de tarefa mapeada que falhou não existe, e perguntar ao Airbyte o último job de cada
-    conexão responderia à pergunta errada: um job que terminou bem **ontem** também é
-    "succeeded". O que importa é o que esta run conseguiu.
+    Quem avisa que *alguma* ficou de fora é `require_all_pages_extracted`, depois da gold.
     """
-    dag_run = get_current_context()["dag_run"]
-    waits = [
-        instance
-        for instance in dag_run.get_task_instances()
-        if instance.task_id == WAIT_TASK_ID
-    ]
-    fresh = [i for i in waits if i.state == TaskInstanceState.SUCCESS]
+    ok, falhas = _extraction_outcome()
 
-    for instance in waits:
-        if instance.state != TaskInstanceState.SUCCESS:
-            logger.error(
-                "Extração sem sucesso em %s[%s]: %s",
-                instance.task_id,
-                instance.map_index,
-                instance.state,
-            )
+    for _, nome, estado in falhas:
+        logger.error("Extração sem sucesso em %s: %s", nome, estado)
 
-    if not fresh:
+    if not ok:
         raise AirflowFailException(
-            f"nenhuma extração concluída nesta run ({len(waits)} tentativas) — "
+            f"nenhuma extração concluída nesta run ({len(ok) + len(falhas)} tentativas) — "
             "o medallion não roda para não reescrever a gold de ontem"
         )
 
-    logger.info("Páginas extraídas: %d de %d", len(fresh), len(waits))
+    logger.info("Páginas extraídas: %d de %d", len(ok), len(ok) + len(falhas))
+
+
+@task(trigger_rule=TriggerRule.ALL_DONE)
+def require_all_pages_extracted() -> None:
+    """Falha a run se **alguma** página ficou de fora — depois de a gold já estar escrita.
+
+    O limiar oposto ao do gate, e de propósito na outra ponta do DAG. Sem esta tarefa, o
+    desenho "página que falha não bloqueia as outras" produz uma run **verde** com páginas
+    defasadas: o vermelho fica numa tarefa mapeada no meio do grafo, e quem acompanha pela
+    lista de runs não vê nada. Aconteceu duas vezes no dia em que o fan-out entrou — uma run
+    com 1 de 3 páginas extraídas e outra com 2 de 3, ambas `success`.
+
+    Depois da gold, não antes: as páginas que funcionaram entregam o dia (é a decisão de não
+    penalizar as outras), e só então a run fica vermelha para ser vista.
+
+    **Pergunta pela extração, não pela métrica.** Página legitimamente quieta — fora de
+    campanha, em período eleitoral — entrega foto com zero, e isso não é problema. Problema é
+    não ter foto. Alarmar por métrica zerada faria a checagem gritar todo dia numa página
+    parada de propósito, e alerta que grita sempre ninguém olha.
+
+    Não abre sessão Spark: lê o estado das tarefas no banco do Airflow. A contrapartida é não
+    detectar sync que termina bem e escreve pouco — para isso seria preciso exigir foto do dia
+    por `page_id` no lake, ao custo de uma leitura Spark.
+    """
+    ok, falhas = _extraction_outcome()
+
+    # Nenhuma espera é o caso em que a descoberta nem chegou a mapear tarefa. Passar aqui
+    # seria o mesmo erro silencioso visto do outro lado: "tudo bem" porque nada aconteceu.
+    if not ok and not falhas:
+        raise AirflowFailException(
+            "nenhuma extração foi sequer tentada nesta run — a descoberta de conexões não "
+            "mapeou nada, então não há como afirmar que alguma página está em dia"
+        )
+
+    if falhas:
+        detalhe = "; ".join(f"{nome}: {estado}" for _, nome, estado in falhas)
+        # Sem nenhuma extração o gate já barrou o medallion, e dizer que a gold saiu seria
+        # mentir para quem lê o erro às três da manhã.
+        contexto = (
+            "a gold do dia saiu com as que funcionaram, mas estas ficaram defasadas"
+            if ok
+            else "nenhuma extraiu, então o medallion não rodou e a gold segue a de ontem"
+        )
+        raise AirflowFailException(
+            f"{len(falhas)} de {len(ok) + len(falhas)} extrações falharam nesta run — "
+            f"{contexto}: {detalhe}. Duas falhas seguidas na mesma página abrem buraco "
+            f"permanente no nível diário dela, que a fonte só serve por 2 dias"
+        )
+
+    logger.info("Todas as %d extrações desta run concluíram", len(ok))
 
 
 @task

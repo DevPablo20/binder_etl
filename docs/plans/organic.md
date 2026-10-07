@@ -355,3 +355,25 @@ Isso tem uma consequência para a checagem por página que ficou adiada: ela pre
 problema). A checagem como proposta já faz isso — ela exige que exista foto do dia, não que
 haja atividade —, mas é a diferença que importa quando alguém for alertar sobre "página ficou
 quieta".
+
+**07/10** — **Erro silencioso por página fechado.** O desenho "página que falha não bloqueia as
+outras" (D2) produzia run **verde** com páginas defasadas, e as três guardas existentes não
+pegavam porque todas são globais: a dependência do DAG passa pelo gate com ≥1 sucesso, o
+`ETL_STRICT` vê silver cheio das outras páginas, e o `assert_photo_reached_gold` compara o
+máximo global, que vem de quem funcionou. Aconteceu duas vezes no dia em que o fan-out entrou:
+run com 1 de 3 páginas extraídas e run com 2 de 3, ambas `success`.
+
+`require_all_pages_extracted` entra como **folha** depois da gold, com o limiar oposto ao do
+gate — falha se alguma ficou de fora. Lê o estado das instâncias de `wait_for_sync` no banco do
+Airflow, sem sessão Spark e sem chamada ao Airbyte, e nomeia as conexões pelo XCom da
+descoberta. Provada nos seis cenários (3 de 3, 1 de 3, 2 de 3, 0 de 3, conexão única, e zero
+esperas mapeadas) e com o encanamento exercitado sob contexto real do Airflow.
+
+Dois detalhes que só apareceram ao escrever o teste: com **zero** esperas mapeadas a checagem
+passaria — "tudo bem porque nada aconteceu" —, agora falha; e a mensagem dizia que a gold tinha
+sido escrita mesmo quando o gate havia barrado o medallion, o que seria mentir para quem lê o
+erro de madrugada.
+
+O que ela não pega, de propósito: sync que termina bem e escreve pouco. Para isso seria preciso
+exigir foto do dia por `page_id` no lake, ao custo de uma leitura Spark. A evidência de 07/10 é
+que job bem-sucedido entregou dado e job cancelado falhou a espera.

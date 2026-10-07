@@ -13,9 +13,8 @@ Facebook e Instagram orgânicos são **uma** iniciativa, não duas: compartilham
 
 ## Próxima ação
 
-Passo 9: as três conexões orgânicas para `scheduleType: "manual"`. O ciclo agendado de 07/10
-rodou verde nas três, então a validação que o passo esperava está feita — o que falta é a
-decisão de virar, que é sem volta.
+Entrar com as demais páginas de Facebook antes de encerrar: hoje só a Texaco existe, e a
+iniciativa não deveria fechar sem o fan-out exercitado com mais de uma. Depois disso, passo 10.
 
 ## Objetivo
 
@@ -64,7 +63,7 @@ Orquestração:
 | 6 | `facebook_organic_daily`: fan-out por conexão descoberta, às 01:00 SP | feito 06/10 |
 | 7 | Checagem de conexão órfã: conexão `Organic` que nenhum DAG reivindica falha | feito 06/10 |
 | 8 | Alerta de falha | fechado 07/10: **acompanhamento manual** na UI, com o log de tarefa persistido para que a falha possa ser diagnosticada; disparo automático no backlog |
-| 9 | As três conexões orgânicas para `scheduleType: "manual"` no Airbyte | a fazer, **por último** |
+| 9 | As três conexões orgânicas para `scheduleType: "manual"` no Airbyte | feito 07/10 pelo Pablo |
 | 10 | Rótulos "alvo" saem de `docs/`; plano apagado | a fazer |
 
 A asserção de frescor subiu de 7 para 3: ela é só `src/`, não depende de DAG, e com ela no
@@ -264,3 +263,23 @@ daquelas runs já estava transcrito aqui (os três disparos e os dois HTTP 409).
 `airflow tasks test` não serve para verificar isso — ele escreve só no stdout, sem arquivo de
 log. A verificação é pelo executor de verdade: `airflow tasks clear` de uma tarefa barata, e o
 log aparecendo em `infra/airflow/logs/dag_id=…/run_id=…/task_id=…`.
+
+**07/10** — **Passo 9 feito: as três conexões orgânicas em `scheduleType: "manual"`**, com
+`status` seguindo `active` (o erro que seria desligar a conexão também para a API não
+aconteceu). As três pagas mantiveram o cron.
+
+Primeiro disparo depois da virada, no DAG de stories: `Sync disparado: job 211`, **sem o
+HTTP 409** que aparecia quando o cron competia. Run verde nas cinco tarefas. A cadeia agora tem
+um dono só.
+
+**Respingo a resolver:** a conexão `Kwai Ads - Always On → Google Sheets` também foi para
+manual, e ela estava em `Every 24 HOURS`. Não é orgânica (tag `Other`), nenhum DAG a dispara, e
+a checagem de órfã não a vê porque olha só a tag `Organic` — então aquela exportação está
+congelada até alguém devolver o agendamento dela.
+
+**07/10** — **Para entrar com página nova de Facebook não muda código nenhum**: não há id de
+página em `src/` nem em `dags/`, tudo agrupa e junta por `page_id`, e o DAG descobre por tag
+mais namespace. O que precisa de cuidado é o `namespaceFormat`, e por uma razão mais forte do
+que o curinga do `raw_path`: **ele é a única fonte do `page_id` em todo o pipeline do Facebook**
+(`page_id_from_path()` extrai do caminho do arquivo com regex). Namespace default esconde a
+página; namespace com nome em vez do id numérico grava `account_id` errado na gold, em silêncio.

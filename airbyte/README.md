@@ -270,12 +270,14 @@ Each sync is a complete snapshot; the bronze keeps one snapshot per day.
 **01:00 America/Sao_Paulo**, before the 06:00 cutoff that sets `snapshot_date`, so the snapshot
 closes the previous day.
 
-The schedule is moving from Airbyte to Airflow: `facebook_organic_daily` triggers the sync
-through the public API and waits for the job, instead of running at a time that merely hopes the
-sync is done. **While both are armed, the cron is a safety net** — the DAG may find the cron's
-job already running and will follow that one, since Airbyte never runs two jobs of the same
-connection at once. Once the DAGs are trusted, every connection a DAG triggers goes to
-`scheduleType: "manual"`; see [docs/plans/organic.md](../docs/plans/organic.md).
+**The hour lives in the DAG, not here.** Every organic connection is on
+`scheduleType: "manual"`: `facebook_organic_daily` triggers the sync through the public API and
+waits for the job, instead of running at a time that merely hopes the sync is done. There is no
+cron behind it any more — a DAG that does not run means no extraction that day, and
+`post_insights` only serves the last 2 days, so two missed days in a row open a permanent hole.
+
+"Manual" is the *schedule*. Never set `status: inactive` — that disables the connection for the
+API trigger too, which is the one thing still expected to work.
 
 **Page connections are discovered, not listed.** `facebook_organic_daily` takes every active
 connection tagged `Organic` whose `namespaceFormat` starts with `facebook_organic/`, so a new
@@ -294,13 +296,12 @@ Two connections write to the same destination, bucket `raw`, **path format
 
 | Connection | Streams | Schedule (Quartz cron) |
 |------------|---------|------------------------|
-| main | `users`, `user_insights`, `user_lifetime_insights`, `media`, `media_insights` | `0 0 2 * * ?` — 02:00 America/Sao_Paulo |
-| stories | `stories`, `story_insights` | `0 30 9 * * ?` — 09:30 America/Sao_Paulo |
+| main | `users`, `user_insights`, `user_lifetime_insights`, `media`, `media_insights` | manual — `instagram_organic_daily` triggers it at 02:00 America/Sao_Paulo |
+| stories | `stories`, `story_insights` | manual — `instagram_stories_daily` triggers it at 09:30 America/Sao_Paulo |
 
-Both are declared by id in `dags/organic_tasks.py` and triggered by their own DAG
-(`instagram_organic_daily`, `instagram_stories_daily`) — they share the namespace
-`instagram_organic`, so discovery cannot tell them apart. Same cron-as-safety-net note as the
-Facebook section above.
+Both are declared by id in `dags/organic_tasks.py` — they share the namespace
+`instagram_organic`, so discovery cannot tell them apart. Same note as the Facebook section
+above: the hour lives in the DAG, and `inactive` is not the same as manual.
 
 Stories get their own connection because story metrics only exist while the story is live
 (24h): once the story expires, its numbers are gone for good, so whatever the last reading

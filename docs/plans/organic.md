@@ -22,9 +22,14 @@ Levar ao lake o conteúdo orgânico de páginas do Facebook e contas de Instagra
 oficial do Airbyte como está, e **garantir que as tabelas de `gold/organic/` estejam atualizadas
 todo dia por dependência, não por horário combinado**.
 
-As duas camadas medallion e a orquestração estão implementadas. Falta a entrega: desligar o
-cron das conexões que o Airflow já dispara, e um alerta de falha. Até lá os dois convivem, com
-o cron do Airbyte como rede de segurança.
+As duas camadas medallion e a orquestração estão implementadas, e **a entrega aconteceu**: as
+nove conexões orgânicas estão em `scheduleType: "manual"`, o cron do Airbyte saiu e quem
+dispara é o DAG. Alerta automático de falha ficou de fora por decisão (passo 8): o
+acompanhamento é manual na UI, com o log de tarefa persistido, e o disparo automático está no
+backlog.
+
+O que falta para encerrar não é código: é o primeiro ciclo rodando desacompanhado com os
+ajustes de 08/10 no ar, e a disposição das decisões ainda abertas.
 
 **Fora do escopo:**
 
@@ -64,14 +69,14 @@ Orquestração:
 | 7 | Checagem de conexão órfã: conexão `Organic` que nenhum DAG reivindica falha | feito 06/10 |
 | 8 | Alerta de falha | fechado 07/10: **acompanhamento manual** na UI, com o log de tarefa persistido para que a falha possa ser diagnosticada; disparo automático no backlog |
 | 9 | As três conexões orgânicas para `scheduleType: "manual"` no Airbyte | feito 07/10 pelo Pablo |
-| 10 | Rótulos "alvo" saem de `docs/`; plano apagado | a fazer |
+| 10 | Rótulos "alvo" saem de `docs/`; plano apagado | **parcial 08/10:** o rótulo de orquestração passou a separar orgânico (pronto) de pagas (legado), e as correções desta sessão subiram para `docs/architecture.md` e `CLAUDE.md`. Apagar o plano espera o ciclo desacompanhado e a disposição de D1, D2, D4 e D7 |
 
 A asserção de frescor subiu de 7 para 3: ela é só `src/`, não depende de DAG, e com ela no
 lugar desde o começo o primeiro DAG testado já exercita o caminho inteiro.
 
-O passo 9 é o último de propósito: enquanto os DAGs não estiverem verdes, o cron do Airbyte é a
-rede de segurança. Enquanto os dois convivem, o disparo do Airflow pode cair em cima do job do
-cron — o Airbyte não roda dois jobs da mesma conexão ao mesmo tempo.
+O passo 9 foi o último de propósito: até os DAGs ficarem verdes, o cron do Airbyte era a rede
+de segurança. O preço da convivência, enquanto durou, era o disparo do Airflow cair em cima do
+job do cron — o Airbyte não roda dois jobs da mesma conexão ao mesmo tempo.
 
 O passo 4 prova o padrão com uma conexão só; o 6 é o único com fan-out. Daí a ordem.
 
@@ -126,9 +131,10 @@ O passo 14 está mais perto do que o backlog supunha: o **Meta Ads já cai no la
 - Conexões, tags, `namespaceFormat`, seleção de campos e agendamento: `airbyte/README.md`.
 - Regras que valem sempre: `CLAUDE.md`.
 
-A seção de orquestração do `docs/architecture.md` está marcada **parcialmente alvo**: os DAGs
-disparam e esperam, mas as conexões ainda têm cron no Airbyte (passo 9) e não há alerta
-(passo 8). O rótulo sai no passo 10.
+A seção de orquestração do `docs/architecture.md` passou a separar **orgânico, que é alvo** —
+conexões em `manual`, DAG dono do horário — de **plataformas pagas, que são legado**: cron do
+Airbyte, `sync_raw` vazio e nenhuma checagem de frescor. Alerta automático segue fora, por
+decisão do passo 8.
 
 ## Decisões em aberto
 
@@ -137,7 +143,7 @@ disparam e esperam, mas as conexões ainda têm cron no Airbyte (passo 9) e não
 | D1 | **Horizonte por métrica dentro do pipeline.** Métrica de insight de conteúdo antigo é resíduo, não desempenho, e cada métrica morre numa idade diferente (diário de 06/10). Hoje quem protege disso é o dashboard do cliente, por heurística; o lake entrega o número cru | Decidir onde mora: coluna de qualidade no silver (`lifetime_truncated_at` por conteúdo × métrica, detectada pela queda) e/ou horizonte por `platform` × métrica no gold, com "não medido" distinto de zero. Enquanto estiver aberta, todo consumidor repete a heurística |
 | D2 | **Revisão tardia das métricas da conta do Instagram.** O conector relê só o dia anterior e a Meta avisa revisão até 48h, então cada dia para de ser lido muito antes de parar de mudar | Medir a diferença entre a penúltima e a última leitura de cada dia. Mensurável: há fotos desde 29/09 e o cron principal (02:00 SP) não mudou. Ao medir, refazer a conta de quantas horas depois do fim do dia vem a última leitura |
 | ~~D6~~ | ~~**Conector próprio com filtro de data**~~ | **Fechada em 07/10 sem precisar de conector:** com `page_size` 5 a CAIXA extraiu inteira em 41 min, numa tentativa. O `page_size` é a alavanca e o valor é **por página**, proporcional ao tamanho dela — Texaco 25, Loterias 10, CAIXA 5. Não há histórico a cortar, porque a extração completa. Se uma página maior que a CAIXA aparecer e 5 não bastar, a decisão reabre |
-| D7 | **O que a gold orgânica faz quando o fato não tem dimensão.** O `test_every_daily_post_is_in_content` assume que todo post com métrica tem linha em `content`, e a fonte não garante isso: post com `is_published = false` é descartado pelo `own_published` do `silver/posts`, e post que só aparece em `post_insights` nunca chega a `posts` (diário de 08/10). Hoje a inconsistência é 12 posts e 0,000% da métrica, então é decisão de desenho, não incêndio | Escolher uma das duas: **(a)** filtrar o fato como a dimensão é filtrada — a métrica do post não publicado desaparece; **(b)** fazer a dimensão aceitar todo post que tem fato, com a ausência como categoria explícita. A regra "todo join do gold é `LEFT`, partindo do fato" e a invariante "nada some" apontam para (b), e aí o teste muda de "fato ⊆ dimensão" para "a ausência está modelada". Decidir antes de mexer no teste: silenciá-lo sem decidir esconde as duas causas |
+| D7 | **O que a gold orgânica faz quando o fato não tem dimensão.** Resolvida a metade de código (o `is_published` virou atributo em 08/10) e respondida a estrutural: `post` e `post_insights` leem o mesmo `/feed` e divergem de forma reprodutível, pelo peso do pedido (diários de 08/10 II e III). Sobra o fato sem dimensão por **completude**: 10 posts, 0,000% da métrica | Fecha de um jeito ou de outro: **(a)** identificar o campo culpado entre os 44 — um `curl` com Page token, lista mínima contra lista cheia — e tirá-lo do pedido, se o conector permitir; ou **(b)** aceitar que a fonte não garante simetria e registrar o horizonte disso, mantendo o teste escopado pelo que chegou ao lake, como está. Não fecha sintetizando linha na dimensão: trocaria vermelho honesto por verde que esconde a lacuna |
 | D4 | **Onde mora o horário depois da migração.** Com o disparo no Airflow, mudar hora de extração vira commit — bom para rastreabilidade, ruim para experimentar (a troca do cron de stories em 06/10 foi pelo painel) | Decidir ao fim do passo 9: aceitar o commit, ou ler o horário de uma Variable do Airflow |
 | ~~D5~~ | ~~**Teto do pool `airbyte_sync`**~~ | **Fechada em 07/10, com a premissa derrubada.** O pool **não** limita sync simultâneo e não tem como: o disparo segura o slot por um segundo e a espera em `reschedule` solta o slot entre os pokes. Com três páginas, os três jobs começaram no mesmo segundo. E não precisa limitar: a Texaco levou **4m00s com três syncs em paralelo**, dentro da faixa dela sozinha (2m53s a 5m46s), com load 2,74 em quatro núcleos e 15 GiB livres — sync é espera de rede, não CPU. Se um dia precisar, o lugar é o limite de concorrência do próprio Airbyte, não o Airflow |
 

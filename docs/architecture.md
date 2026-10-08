@@ -409,6 +409,15 @@ está. Não passa pelo Bridge nem pela Catalog API: não existe hierarquia campa
 - **O Business Suite e a API leem a mesma fonte.** Os números da aba Facebook de um post batem
   exatamente com o `post_insights`; a lista "Todos os conteúdos" soma Facebook e Instagram
   nos posts cruzados e não serve de comparação.
+- **`post` e `post_insights` leem o mesmo feed e não devolvem o mesmo conjunto.** Os dois
+  chamam `/{page_id}/feed` com o mesmo paginador de cursor; o que difere é o peso do pedido —
+  o `post` pede 44 campos num `QueryProperties`, que o CDK quebra em vários requests por
+  página e remonta pela primary key, enquanto o `post_insights` pede um campo só
+  (`insights.metric(...)`). Existem posts que o `post_insights` devolve em **todo** sync e o
+  `post` não devolve em nenhum: a divergência é reprodutível, não transiente, e o suspeito é
+  algum dos 44 campos fazer a Graph omitir o item (ou a remontagem por chunk perder registro
+  ausente de um chunk). **Consequência de desenho:** a dimensão de post não cobre
+  necessariamente o fato, e nada no pipeline pode supor que cobre.
 
 ### Bronze: uma foto por dia
 
@@ -433,10 +442,17 @@ Todos os streams deduplicam por `id + snapshot_date`, e o silver decide quem é 
 |---|---|---|
 | `pages` | página | última foto de `page` |
 | `page_followers_snapshot` | página × `snapshot_date` | `fan_count`, `followers_count` de `page` |
-| `posts` | post | última foto de `post`, só da própria página e publicado |
+| `posts` | post | última foto de `post`, só da própria página |
 | `post_metrics_daily` | post × `snapshot_date` | série diária: `post_insights` (`lifetime`) + `shares` de `post`, total e delta |
 | `page_insights_daily` | página × métrica × período × `metric_date` | `page_insights`, array aberto |
 
+- **O filtro de `posts` é de autoria; visibilidade é atributo.** O `/feed` traz posts de
+  visitantes e posts em que a página foi marcada, e o `from.id` os separa — essa é a única
+  pergunta que o filtro responde. `is_published`, `is_hidden` e `is_expired` são colunas:
+  despublicado não quer dizer nunca publicado, e apagar o post por isso perderia histórico
+  real. O motivo é mais forte que preferência: o `post_metrics_daily` sai de `post_insights` e
+  não filtra nada, então qualquer filtro só na dimensão faz fato e dimensão **discordarem da
+  mesma linha de origem** — a métrica sobrevive e o atributo não.
 - **Map vazio e map nulo são coisas diferentes.** As métricas por tipo (reações, cliques)
   viram `MAP<STRING, BIGINT>`. A Meta só devolve chaves com valor, então `{}` vale zero; map
   nulo é métrica que não veio.
@@ -635,4 +651,13 @@ que aquela linha não é desempenho orgânico.
 `tests/transformers/{plataforma}/test_conservation.py`, sobre a fatia de cada rede: cada linha
 da série do silver vira uma linha do `content_daily`; por post e métrica, o total do primeiro
 dia (quando o número do dia é desconhecido) mais a soma dos dias é igual ao total do último
-dia; e todo post do `content_daily` está no `content`.
+dia; e todo post do `content_daily` **que chegou ao lake** está no `content`.
+
+O escopo da terceira não é frouxidão, é a linha entre os dois problemas: pedir que *todo* post
+do fato esteja na dimensão seria depender da extração ser completa, e ela não é — o
+`post_insights` devolve posts que o `post` nunca devolve. Post sem registro em `post` nunca
+teve atributo para a dimensão guardar, então a ausência dele é **completude**, não
+conservação. Escopando pelo que existe no bronze, o teste segue exato, sem limiar, e pega o que
+é de fato nosso: fato e dimensão discordando de uma linha que os dois viram. O que fica de
+fora, de propósito, é visível como ausência — não se inventa linha na dimensão para a
+invariante passar, porque isso trocaria um vermelho honesto por um verde que esconde a lacuna.

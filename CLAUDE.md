@@ -132,7 +132,27 @@ sumiu. Deletados chegam explicitamente com `*_STATUS_DELETE` em `secondary_statu
 - **`page_size` do conector Facebook Pages é por página, proporcional ao tamanho dela.** Valor
   alto demais faz a Meta recusar a resposta ("too large or timed out") e, como os streams são
   full refresh, cada tentativa recomeça do zero — o job entra em retry infinito. Medido: 696
-  posts em 25, 2.194 em 10, 5.239 em 5.
+  posts em 25, 2.194 em 10, 5.239 em 5. **Ele só afeta `post` e `post_insights`** — no manifest
+  do conector, só esses dois têm paginador; `page` e `page_insights` são `NoPagination`, então
+  mexer no valor não muda nada no nível de página. E o stream caro é o `post` porque ele pede
+  **44 campos** num `QueryProperties`, que o CDK quebra em vários requests por página do feed;
+  o `post_insights` pede um campo só. Baixar `page_size` multiplica requests e arquivos.
+- **`post` e `post_insights` não cobrem o mesmo conjunto de posts.** Os dois leem
+  `/{page_id}/feed` com o mesmo paginador, mas existem posts que o `post_insights` devolve em
+  **todo** sync e o `post` não devolve em nenhum — reprodutível, não transiente. Então a
+  dimensão de post **não** cobre necessariamente o fato, e supor que cobre é bug: foi o que
+  fez `test_every_daily_post_is_in_content` falhar. Fato sem dimensão é completude, e completude
+  não se conserta inventando linha na dimensão.
+- **Filtro de dimensão responde autoria; visibilidade é coluna.** No `silver/posts` o `from.id`
+  separa o que é conteúdo da página; `is_published`, `is_hidden` e `is_expired` são atributos.
+  A razão vale para qualquer plataforma: o fato e a dimensão saem de streams diferentes
+  (`post_insights` e `post`), e filtro aplicado só num dos dois os faz **discordar da mesma
+  linha de origem** — a métrica sobrevive e o atributo some.
+- **Coluna nova em bronze/silver exige uma escrita com `overwrite_schema=True`.** O `overwrite`
+  do Delta recusa schema diferente, então a primeira escrita depois de acrescentar coluna falha
+  até alguém rodar a migração; os runs seguintes casam sozinhos. O default fica desligado de
+  propósito: ligado sempre, um transform que parasse de produzir uma coluna a apagaria da
+  tabela em silêncio em vez de falhar.
 - **`max_padding_size_mb` do destino S3 fica em `0`.** O Parquet alinha o início de cada row
   group à fronteira de bloco preenchendo com zeros, e no destino do Airbyte essa fronteira é
   de 5 MiB. Com a tolerância em 8 MiB — maior que a fronteira — a condição "espaço restante ≤

@@ -503,3 +503,31 @@ sobreviveram.
 
 **Não é regressão de commit.** O teste e o filtro nasceram no mesmo commit
 (`3f5d48e`); o que mudou foi o dado — a assimetria chegou com a extração de 07/10.
+
+**08/10 (II)** — **Os 10 insight-only não são artefato do enxame: `post` e `post_insights`
+discordam de forma reprodutível.** A hipótese de flush interrompido está derrubada pela
+medição.
+
+Rastreando os insights dos órfãos até o arquivo de origem no raw, por sync:
+
+| página | syncs que trouxeram insight dos órfãos | linhas por sync |
+|---|---|---|
+| CAIXA (155187484530317) | **15 de 15** | **42, sempre** (7 posts × 6 linhas) |
+| Loterias (204170826380793) | 3 de 4, inclusive o de 08/10 | 18, 6, 18 |
+
+Contagem perfeitamente estável em toda tentativa. Flush interrompido daria número errático.
+E o `post` da CAIXA, no mesmo dia, variou de 4.477 a 5.240 linhas por sync — a variação é das
+tentativas que morreram no meio; as **duas que completaram devolveram 5.240 cada**, e nenhuma
+das duas trouxe os 7. O sync de `post` das Loterias de 08/10 também não trouxe os 3.
+
+Descartado também que seja formato de id nosso: os 8.138 ids do `bronze/post` têm todos duas
+partes (`{page_id}_{post_id}`), e **nenhum** post do bronze tem o mesmo sufixo de um órfão com
+prefixo diferente. Os 10 têm as 5 métricas de insight normalmente.
+
+Então o `post_insights` conhece, em todo sync, posts que o `post` nunca devolve. Isso é
+propriedade do conector ou da Graph API, não transiente e não nosso.
+
+**O que falta para fechar a D7:** saber qual endpoint cada stream chama. Dois caminhos, nenhum
+feito — o token da Graph vem mascarado na API do Airbyte, e extraí-lo do secret store não se
+justifica para isto: (a) ler o manifest do conector `source-facebook-pages`, que não precisa de
+credencial nenhuma; (b) consultar um dos ids na Graph API, que o Pablo roda com o token dele.

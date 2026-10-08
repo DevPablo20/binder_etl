@@ -122,6 +122,13 @@ sumiu. Deletados chegam explicitamente com `*_STATUS_DELETE` em `secondary_statu
   `weekly` ou `stories`), que é como o DAG a encontra — nenhum id de conexão mora no
   repositório. Sem condutor, com dois, ou em namespace que nenhum DAG dirige, a checagem
   `assert_connections_are_claimed` falha. Sem ela a conexão nunca extrairia, em silêncio.
+- **Sync que termina bem sem trazer linha nenhuma é falha de extração.** O Airbyte fecha job
+  em `succeeded` com `rowsSynced` 0, não escreve arquivo no raw, e a foto do dia deixa de
+  existir para aquela conexão — com o DAG verde. A espera desconfia da contagem, não só do
+  estado. Exceção: stories, onde dia sem story vivo devolve zero legitimamente.
+- **Prazo de espera é por cadência.** Diário curto (`max_active_runs=1` faz run pendurada
+  engolir o dia seguinte, e o `page_insights` só serve 2 dias); semanal largo (a próxima run é
+  em 7 dias, e sync de posts já levou mais de 5 horas e terminou bem).
 - **`page_size` do conector Facebook Pages é por página, proporcional ao tamanho dela.** Valor
   alto demais faz a Meta recusar a resposta ("too large or timed out") e, como os streams são
   full refresh, cada tentativa recomeça do zero — o job entra em retry infinito. Medido: 696

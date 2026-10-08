@@ -90,6 +90,17 @@ na terça (corte das 06:00), e o delta entre duas quartas cobre quarta → terç
 `gap_days` 7 e o gold expõe `days_covered` 7 — a matemática do delta sempre foi agnóstica ao
 intervalo entre fotos.
 
+**O prazo da espera é por cadência, não um só.** O DAG diário não pode esperar muito:
+`max_active_runs=1` faz uma run pendurada engolir o dia seguinte, e o `page_insights` só serve
+2 dias. O semanal pode e precisa — a próxima run é em 7 dias, e um sync de posts já levou mais
+de cinco horas e terminou bem. Prazo curto no diário, largo no semanal.
+
+**Sync que termina bem sem trazer linha nenhuma é falha de extração, não sucesso.** O Airbyte
+pode fechar um job em `succeeded` com `rowsSynced` 0 — e aí não escreve arquivo no raw, então a
+foto do dia simplesmente não existe para aquela conexão. A espera desconfia disso e falha, o que
+faz a conexão entrar na contagem da checagem final e aparecer pelo nome. A exceção são os
+stories: dia sem story vivo devolve zero legitimamente.
+
 **Disparar e aguardar são duas tarefas.** O disparo guarda o id do job; a espera lê esse id e
 faz o poll. Numa tarefa só, o retry da espera dispara um segundo sync. E o disparo pode devolver
 o job que já estava rodando — isso não é sucesso, é outra coisa para a espera tratar.

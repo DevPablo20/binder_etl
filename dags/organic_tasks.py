@@ -41,8 +41,6 @@ logger = logging.getLogger(__name__)
 POOL_SYNC = "airbyte_sync"
 POOL_MEDALLION = "spark_medallion"
 
-# Folga sobre o pior sync medido (a CAIXA leva ~41 min; o principal do Instagram, 23 a 34).
-SYNC_TIMEOUT = timedelta(hours=2)
 POKE_INTERVAL_SECONDS = 60
 
 # As checagens contam as instâncias destas tarefas, então os nomes precisam casar com os
@@ -73,6 +71,21 @@ DRIVEN_BY_DAG: tuple[tuple[str, str], ...] = (
     (WEEKLY_TAG, INSTAGRAM_NAMESPACE),
     (STORIES_TAG, INSTAGRAM_NAMESPACE),
 )
+
+# Quanto a espera aguenta antes de desistir, por condutor — e **não** é o mesmo número.
+#
+# O diário não pode esperar muito: `max_active_runs=1` faz uma run pendurada engolir o dia
+# seguinte, e o `page_insights` só serve 2 dias. Quatro horas são ~50× o pior sync diário
+# medido (5 min) e ainda deixam o dia inteiro para um retry à mão.
+#
+# O semanal pode: a próxima run é em 7 dias, não há o que atropelar. E precisa — o sync de
+# posts da Loterias levou **5h26** e terminou bem; com 2h a espera desistia antes de o dado
+# chegar, deixando a run vermelha com dado íntegro. Doze horas cobrem o dobro do pior caso.
+SYNC_TIMEOUT_BY_DRIVER: dict[str, timedelta] = {
+    DAILY_TAG: timedelta(hours=4),
+    STORIES_TAG: timedelta(hours=4),
+    WEEKLY_TAG: timedelta(hours=12),
+}
 
 DEFAULT_ARGS = {
     "owner": "binder",
@@ -135,19 +148,40 @@ def trigger_sync(connection_id: str) -> int:
 
 @task.sensor(
     poke_interval=POKE_INTERVAL_SECONDS,
-    timeout=SYNC_TIMEOUT.total_seconds(),
+    timeout=SYNC_TIMEOUT_BY_DRIVER[DAILY_TAG].total_seconds(),
     mode="reschedule",
     pool=POOL_SYNC,
 )
-def wait_for_sync(job_id: int) -> PokeReturnValue:
+def wait_for_sync(job_id: int, expect_rows: bool = True) -> PokeReturnValue:
     """Espera o job terminar. `reschedule` solta o slot entre as tentativas.
 
     Não é detalhe de estilo: o sync principal do Instagram leva mais de vinte minutos e o da
     CAIXA uns quarenta, e um poll bloqueante seguraria um slot do LocalExecutor todo esse
-    tempo. Estado terminal ruim levanta (`job_is_done`) em vez de esperar o timeout.
+    tempo. Estado terminal ruim levanta (`job_is_done`) em vez de esperar o timeout. O
+    `timeout` aqui é o do condutor diário; `organic_flow` o sobrescreve por cadência.
+
+    **Terminar bem sem trazer linha nenhuma não é extração bem-sucedida.** Visto em 07/10 em
+    duas conexões: `succeeded`, ~16 min, `rowsSynced` 0, nenhum arquivo no raw — e o DAG ficou
+    verde porque o Airbyte disse que deu tudo certo. Tratar isso como falha faz a conexão
+    entrar na contagem de `require_all_extractions` e aparecer pelo nome, reaproveitando toda
+    a máquina que já existe em vez de uma checagem nova.
+
+    `expect_rows=False` só nos stories: dia sem story vivo devolve zero linhas legitimamente.
     """
-    status = client.job_status(job_id)
-    return PokeReturnValue(is_done=client.job_is_done(status), xcom_value=status)
+    record = client.job(job_id)
+    status = record["status"]
+    done = client.job_is_done(status)
+
+    if done and expect_rows and not record.get("rowsSynced"):
+        # Determinístico: repetir o poke daria o mesmo zero, então não vale gastar retry.
+        raise AirflowFailException(
+            f"job {job_id} terminou `{status}` sem trazer linha nenhuma "
+            f"(`rowsSynced` {record.get('rowsSynced')!r}, duração {record.get('duration')}). "
+            "Sync vazio não escreve arquivo no raw, então a foto do dia não existe para esta "
+            "conexão — é falha de extração, não sucesso"
+        )
+
+    return PokeReturnValue(is_done=done, xcom_value=status)
 
 
 def _extraction_outcome() -> tuple[list, list]:
@@ -331,7 +365,11 @@ def organic_flow(driver: str, namespace: str, platform: str) -> None:
     eles é qual grupo de conexões dirigem, em que horário rodam e qual medallion chamam.
     """
     connection_ids = discover_connections(driver, namespace)
-    waits = wait_for_sync.expand(job_id=trigger_sync.expand(connection_id=connection_ids))
+    # O timeout vem do condutor; `expect_rows` só cai nos stories, onde zero linha é legítimo.
+    espera = wait_for_sync.override(
+        timeout=SYNC_TIMEOUT_BY_DRIVER[driver].total_seconds()
+    ).partial(expect_rows=driver != STORIES_TAG)
+    waits = espera.expand(job_id=trigger_sync.expand(connection_id=connection_ids))
 
     gate = require_any_fresh_extraction()
     waits >> gate

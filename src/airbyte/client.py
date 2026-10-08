@@ -223,13 +223,19 @@ def trigger_sync(connection_id: str) -> int:
     return int(job_id)
 
 
+def job(job_id: int) -> dict:
+    """O job inteiro. Além do `status`, traz `rowsSynced` — e um sync que termina bem sem
+    trazer linha nenhuma é um caso real: visto em 07/10 em duas conexões, com `succeeded` e
+    `rowsSynced` 0, sem escrever arquivo no raw."""
+    response = _request("GET", f"/jobs/{job_id}", token=token())
+    if not response.get("status"):
+        raise AirbyteError(f"job {job_id} sem `status` na resposta")
+    return response
+
+
 def job_status(job_id: int) -> str:
     """Estado atual do job."""
-    response = _request("GET", f"/jobs/{job_id}", token=token())
-    status = response.get("status")
-    if not status:
-        raise AirbyteError(f"job {job_id} sem `status` na resposta")
-    return status
+    return job(job_id)["status"]
 
 
 def job_is_done(status: str) -> bool:

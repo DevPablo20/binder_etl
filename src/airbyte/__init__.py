@@ -1,6 +1,7 @@
 from .client import (
     STATUS_SUCCESS,
     AirbyteError,
+    job,
     job_is_done,
     job_status,
     last_job,
@@ -11,6 +12,7 @@ from .client import (
 __all__ = [
     "STATUS_SUCCESS",
     "AirbyteError",
+    "job",
     "job_is_done",
     "job_status",
     "last_job",

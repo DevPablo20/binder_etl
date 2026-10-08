@@ -13,15 +13,8 @@ Facebook e Instagram orgânicos são **uma** iniciativa, não duas: compartilham
 
 ## Próxima ação
 
-Duas decisões que o primeiro ciclo na estrutura nova levantou (diário de 08/10):
-
-1. **O timeout da espera precisa ser por cadência.** Hoje é 2h para todos; um sync semanal
-   levou 5h26 e a espera desistiu antes de o dado chegar. Semanal pode esperar 8h sem
-   atropelar nada; diário não pode, porque `max_active_runs=1` bloquearia o dia seguinte.
-2. **"Succeeded com 0 linhas" existe e passa pela checagem.** Decidir se entra a checagem de
-   frescor por página no lake, que custa uma leitura Spark por DAG.
-
-Depois disso, o passo 14 espera o ETL de Facebook Marketing.
+Observar o ciclo de 08/10 à noite e o semanal de 14/10 com os dois ajustes de hoje no ar. O
+passo 14 espera o ETL de Facebook Marketing.
 
 ## Objetivo
 
@@ -453,3 +446,35 @@ O que isso deixou no lake:
   de 7, com `days_covered` dizendo isso. Nível de conta do Instagram está em 07/10.
 - **`account_daily` do Facebook em 05/10** — é o atraso de ~2 dias do `page_insights`, por
   desenho, não falha.
+
+**08/10** — **Os dois achados do primeiro ciclo foram corrigidos.**
+
+**Prazo de espera por cadência**, em vez de 2h para tudo:
+
+| Condutor | Prazo | Por quê |
+|---|---|---|
+| `daily`, `stories` | 4h | `max_active_runs=1` faz run pendurada engolir o dia seguinte, e o `page_insights` só serve 2 dias. São ~50× o pior sync diário medido (5 min), com o dia inteiro de folga para retry à mão |
+| `weekly` | 12h | A próxima run é em 7 dias, não há o que atropelar — e o sync de posts da Loterias levou 5h26 e terminou bem. Doze horas cobrem o dobro do pior caso |
+
+Implementado com `wait_for_sync.override(timeout=…)` por DAG, a partir de um mapa por condutor.
+
+**"Terminou bem sem trazer nada" virou falha**, dentro da própria espera: ela passou a ler o
+job inteiro (`client.job`) e não só o estado, e falha quando o job fecha em `succeeded` com
+`rowsSynced` 0. Sem isso o Airbyte diz "deu tudo certo", nenhum arquivo vai para o raw, a foto
+do dia não existe e o DAG fica verde — foi o que aconteceu em 07/10 com `Texaco (posts)` e
+`Instagram (mídia)`, ambos `succeeded` em ~16 min com zero linhas.
+
+Duas escolhas de desenho:
+
+- **Mora na espera, não numa tarefa nova.** Tratar o sync vazio como falha faz a conexão entrar
+  na contagem de `require_all_extractions` e aparecer pelo nome, reaproveitando a máquina que
+  já existe. E resolve mais barato que a alternativa — a checagem de foto por página no lake,
+  que custaria uma leitura Spark por DAG.
+- **`AirflowFailException`, sem retry.** Repetir o poke daria o mesmo zero.
+
+A exceção é `stories`, com `expect_rows=False`: dia sem story vivo devolve zero
+legitimamente, e alarmar ali faria a checagem gritar em dia calmo.
+
+Provado em seis cenários (rodando, com linhas, zero linhas, campo ausente, zero em stories,
+cancelado) e conferido no grafo: 4h nos três diários, 12h nos dois semanais, `expect_rows`
+falso só nos stories.

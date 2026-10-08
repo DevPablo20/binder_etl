@@ -181,6 +181,35 @@ def test_last_job_sem_historico(monkeypatch):
     assert client.last_job(CONNECTION) is None
 
 
+def test_job_traz_o_registro_inteiro(monkeypatch):
+    """A contagem de linhas vem daqui: um job pode terminar `succeeded` com `rowsSynced` 0,
+    e quem espera precisa poder desconfiar disso."""
+
+    def handler(_method, path, _payload, _token):
+        if path == "/applications/token":
+            return TOKEN_RESPONSE
+        assert path == "/jobs/91"
+        return {"jobId": 91, "status": "succeeded", "rowsSynced": 0, "duration": "PT16M"}
+
+    fake_request(monkeypatch, handler)
+
+    registro = client.job(91)
+    assert registro["status"] == "succeeded"
+    assert registro["rowsSynced"] == 0
+
+
+def test_job_sem_status_levanta(monkeypatch):
+    def handler(_method, path, _payload, _token):
+        if path == "/applications/token":
+            return TOKEN_RESPONSE
+        return {"jobId": 91}
+
+    fake_request(monkeypatch, handler)
+
+    with pytest.raises(AirbyteError, match="status"):
+        client.job(91)
+
+
 def test_job_status_le_o_estado(monkeypatch):
     def handler(_method, path, _payload, _token):
         if path == "/applications/token":

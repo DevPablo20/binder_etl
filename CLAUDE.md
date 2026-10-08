@@ -133,6 +133,21 @@ sumiu. Deletados chegam explicitamente com `*_STATUS_DELETE` em `secondary_statu
   alto demais faz a Meta recusar a resposta ("too large or timed out") e, como os streams são
   full refresh, cada tentativa recomeça do zero — o job entra em retry infinito. Medido: 696
   posts em 25, 2.194 em 10, 5.239 em 5.
+- **`max_padding_size_mb` do destino S3 fica em `0`.** O Parquet alinha o início de cada row
+  group à fronteira de bloco preenchendo com zeros, e no destino do Airbyte essa fronteira é
+  de 5 MiB. Com a tolerância em 8 MiB — maior que a fronteira — a condição "espaço restante ≤
+  tolerância" nunca é falsa e o alinhamento deixa de ser condicional: **5 MiB de zeros por row
+  group**, com um row group de 971 bytes chegando a ocupar 5 MiB. Alinhamento só serve a
+  localidade de bloco no HDFS, que o MinIO não tem. O padding é inerte (os offsets vivem no
+  footer, todo leitor pula), então ele não quebra nada — só multiplica o bucket por ~30. E
+  **baixar `block_size_mb` piora**: corta mais row groups, e cada um paga a fronteira.
+- **Tombstone do Delta volta a cada escrita; padding não.** O `overwrite` do medallion marca
+  `remove` no log e grava um conjunto novo, sem apagar o anterior do disco — então a camada
+  guarda uma cópia por run. É consequência da acumulação, não defeito, e por isso o VACUUM é
+  política periódica (`lake_vacuum_weekly`), não limpeza de uma vez. Retenção abaixo das 168h
+  do Delta exige desligar a trava de retenção, e a trava protege leitor concorrente — o
+  `catalog-api` lê silver por HTTP e não passa pelo pool do Airflow, então nenhum horário do
+  Airflow garante janela quieta. Retenção curta é operação manual.
 - **Métrica de insight de conteúdo antigo é resíduo, não zero real.** Fora da janela de
   retenção a Meta responde um número minúsculo em vez de erro, o corte não é o aniversário do
   conteúdo e cada métrica morre numa idade diferente. Derive o horizonte por plataforma **e por
@@ -162,6 +177,8 @@ pytest tests/transformers/tiktok/               # só TikTok — árvore espelha
 pytest tests/transformers/tiktok/test_conservation.py  # invariante de conservação (rode o medallion antes)
 pytest tests/transformers/facebook_organic/     # só facebook_organic (conservação por post incluída)
 pytest tests/transformers/instagram_organic/    # só instagram_organic (conservação por mídia incluída)
+python -m src.pipelines.vacuum                  # relatório do que o VACUUM recolheria (não apaga)
+python -m src.pipelines.vacuum --apply          # recolhe arquivo Delta superado, retenção 168h
 ```
 
 ## Documentação

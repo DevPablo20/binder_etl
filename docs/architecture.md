@@ -221,6 +221,31 @@ recente vence — o SCD tipo 1, entre rodadas e dentro de uma rodada.
 um objeto presente no bronze mas ausente do raw desta rodada sobrevive a `_accumulate` +
 `dedupe`.
 
+### Como o volume do lake se forma — e por que são dois problemas
+
+O disco do lake cresce por dois mecanismos independentes, e confundi-los leva a apagar dado
+sem necessidade.
+
+**No raw, por arquivo.** Um Parquet é dividido em *row groups*: fatias horizontais de linhas,
+com as colunas de cada fatia guardadas em sequência dentro dela, e um footer no fim que indexa
+offset e estatística de cada coluna de cada row group. Como o leitor nunca varre o arquivo —
+lê o footer e salta para o offset — espaço morto no meio é invisível para quem lê. O Parquet
+usa isso para alinhar o início de cada row group à fronteira de bloco do filesystem,
+preenchendo o vão com zeros, o que faz sentido em HDFS e nenhum em object storage. Dois
+números governam quanto se perde: a fronteira de alinhamento e `max_padding_size_mb`. Com a
+tolerância maior que a fronteira, o alinhamento vira obrigatório — a condição que o limita não
+pode ser falsa. `block_size_mb` é outra coisa: é o tamanho-alvo do row group, medido **antes**
+da compressão, então com SNAPPY em dado de marketing (muito repetitivo) um alvo de centenas de
+MB cai em centenas de KB no disco. Baixá-lo corta mais row groups e paga mais fronteiras.
+
+**Nas camadas Delta, por escrita.** O `overwrite` não apaga: marca `remove` no `_delta_log` e
+grava um conjunto novo. A tabela guarda uma cópia por run, e o log diz que só a última conta.
+
+A diferença decide a forma da solução: o padding se corrige **uma vez**, num campo do destino,
+e não volta; o tombstone volta a cada escrita e precisa de política periódica
+(`src/io/maintenance.py`, DAG `lake_vacuum_weekly`). Nenhum dos dois é perda de dado — o
+padding é inerte e o tombstone é histórico que o log já aposentou.
+
 ### Chave de dedupe: a chave natural mínima
 
 O raw e o bronze acumulam versões de cada objeto. Com chave composta, um ad que mudasse de

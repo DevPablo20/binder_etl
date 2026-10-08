@@ -60,10 +60,13 @@ não como erro.
 
 ## Orquestração (Airflow × Airbyte)
 
-> **Parcialmente alvo.** Os DAGs do orgânico já disparam a extração e esperam o job; o que
-> falta é a entrega final — as conexões ainda têm cron no Airbyte, convivendo com o disparo do
-> Airflow, e não há alerta de falha. Nas plataformas pagas, o `sync_raw` segue um
-> `EmptyOperator`. Estado em [plans/organic.md](plans/organic.md).
+> **Alvo no orgânico, legado nas plataformas pagas.** As nove conexões orgânicas estão em
+> `scheduleType: "manual"` e quem dispara é o DAG — o cron do Airbyte saiu, e os dois não
+> convivem mais. Falha é acompanhada à mão na UI, com o log de tarefa persistido; alerta
+> automático está no backlog. **Nas pagas nada disso vale:** a extração segue no cron do
+> Airbyte e o `sync_raw` do `tiktok_daily` é um `EmptyOperator`, então o medallion delas não
+> depende da extração e nenhuma checagem de frescor as cobre — foi assim que o bronze do
+> TikTok ficou dois dias atrás do raw, com todas as folhas verdes. No backlog.
 
 Cada extração tem um DAG, e o DAG é dono da sequência: **dispara a conexão do Airbyte, aguarda
 o job terminar, monta o medallion.** Horário combinado não é dependência — se a extração atrasa

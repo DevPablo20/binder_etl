@@ -531,3 +531,38 @@ propriedade do conector ou da Graph API, não transiente e não nosso.
 feito — o token da Graph vem mascarado na API do Airbyte, e extraí-lo do secret store não se
 justifica para isto: (a) ler o manifest do conector `source-facebook-pages`, que não precisa de
 credencial nenhuma; (b) consultar um dos ids na Graph API, que o Pablo roda com o token dele.
+
+**08/10 (III)** — **Mesmo endpoint, mesmo paginador: a divergência está no `fields`.** Lido do
+manifest do conector `source-facebook-pages:2.1.4`, já presente no cluster (nenhum download,
+nenhuma credencial).
+
+Fato, não hipótese:
+
+| | `post` | `post_insights` |
+|---|---|---|
+| path | `/{page_id}/feed` | `/{page_id}/feed` — **o mesmo** |
+| paginador | `facebook_post_paginator` | o mesmo |
+| `fields` | `QueryProperties` com **44 campos** | `insights.metric(5 métricas)` |
+| extrator | `data` | `data.*.insights.data.*` |
+
+`url_base` é `graph.facebook.com/v24.0` nos dois. Então a hipótese de endpoints diferentes
+está **errada** — os dois percorrem o mesmo feed, com o mesmo cursor.
+
+O que difere é o peso do pedido. `post_query_properties` é um `QueryProperties` com
+`property_selector`, ou seja, **property chunking do CDK**: a lista de 44 campos é quebrada em
+vários requests por página do feed, e os registros parciais são remontados pela primary key.
+O `post_insights` faz um request leve por página, de um campo só.
+
+A inferência que resta — e é inferência — é que algum dos 44 campos faz a Graph omitir ou
+falhar o item para esses posts, ou que a remontagem por chunk perde registro ausente de um
+chunk. Candidatos pelo histórico de restrição da Graph: `instagram_eligibility`,
+`allowed_advertising_objects`, `video_buying_eligibility`, `targeting`, `feed_targeting`,
+`privacy`, `promotable_id`, `scheduled_publish_time`.
+
+Isso também explica o `page_size`: o stream caro **é** o `post`, e é caro por causa dos 44
+campos em chunks — não por causa do volume de posts. É a mesma causa do limite de 5 na CAIXA.
+
+**Teste que fecha:** pedir um dos ids órfãos à Graph duas vezes, com lista mínima e com os 44
+campos. Se a mínima responde e a de 44 falha, o erro nomeia o campo. Exige **Page token** — o
+token de usuário é recusado com `code 190 / subcode 2069032` na nova experiência de Páginas,
+que é por que a primeira tentativa falhou.

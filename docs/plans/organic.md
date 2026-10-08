@@ -13,9 +13,15 @@ Facebook e Instagram orgânicos são **uma** iniciativa, não duas: compartilham
 
 ## Próxima ação
 
-Nada de orgânico até o ETL de Facebook Marketing existir — o passo 14 (marcação de
-impulsionado) depende do transformer do Meta Ads. Até lá, o que resta é observar: o primeiro
-ciclo diário na estrutura nova é 08/10, e o primeiro semanal é 14/10.
+Duas decisões que o primeiro ciclo na estrutura nova levantou (diário de 08/10):
+
+1. **O timeout da espera precisa ser por cadência.** Hoje é 2h para todos; um sync semanal
+   levou 5h26 e a espera desistiu antes de o dado chegar. Semanal pode esperar 8h sem
+   atropelar nada; diário não pode, porque `max_active_runs=1` bloquearia o dia seguinte.
+2. **"Succeeded com 0 linhas" existe e passa pela checagem.** Decidir se entra a checagem de
+   frescor por página no lake, que custa uma leitura Spark por DAG.
+
+Depois disso, o passo 14 espera o ETL de Facebook Marketing.
 
 ## Objetivo
 
@@ -411,3 +417,39 @@ Três coisas que o caminho ensinou:
   `No fields selected for stream user_insights` **depois** de a conexão antiga já ter sido
   desativada, deixando o Instagram diário sem conexão por alguns minutos. A correção é omitir
   a chave quando vem vazia. Numa próxima migração, criar tudo antes de desativar nada.
+
+**08/10** — **Primeiro ciclo na estrutura nova. Os três diários verdes, um semanal vermelho —
+e o vermelho foi a checagem nova fazendo o trabalho dela.**
+
+| Run | Estado | Duração |
+|---|---|---|
+| `facebook_organic_daily` | success | 8 min |
+| `instagram_organic_daily` | success | 11 min |
+| `instagram_stories_daily` | success | 6 min |
+| `instagram_organic_weekly` | success | 24 min |
+| `facebook_organic_weekly` | **failed** | 125 min |
+
+No semanal do Facebook: 2 de 3 extrações concluíram, o gate deixou passar, o medallion rodou, e
+`require_all_extractions` **derrubou a run** nomeando a conexão que faltou. Ontem a situação
+idêntica terminou verde. A checagem funcionou na primeira vez que teve chance.
+
+**Achado 1: o timeout de 2h é curto para a cadência semanal.** O job de posts da Loterias levou
+**5h25m50s** e terminou **bem**, com 14.908 linhas — o mesmo trabalho levou 16m58s dois dias
+antes. A espera estourou as 2h e falhou; o dado chegou às 02:14 e entrou no lake pela rodada
+diária das 04:00. Então a run ficou vermelha por um motivo real (o DAG não pôde confirmar) com
+o dado íntegro no fim. Hipótese do 20× mais lento: limite de taxa da Meta depois do volume do
+dia (os syncs de teste, os 41 min da CAIXA e quatro syncs simultâneos à noite). Não é fato
+provado.
+
+**Achado 2: "succeeded com 0 linhas" existe, e passa pela checagem.** Dois jobs terminaram bem
+sem escrever nada: `Facebook Pages - Texaco (posts)` e `Instagram Pages - All (mídia)`, ambos em
+~16 min. É exatamente o furo que `require_all_extractions` não cobre por desenho.
+
+O que isso deixou no lake:
+
+- **Facebook: em ordem.** Nível de página e de post com foto de 07/10.
+- **Instagram mídia: uma foto atrás** (06/10 em vez de 07/10), porque o sync de 0 linhas não
+  produziu foto. Não é perda: a cadência é semanal, e o primeiro delta vai cobrir 8 dias em vez
+  de 7, com `days_covered` dizendo isso. Nível de conta do Instagram está em 07/10.
+- **`account_daily` do Facebook em 05/10** — é o atraso de ~2 dias do `page_insights`, por
+  desenho, não falha.

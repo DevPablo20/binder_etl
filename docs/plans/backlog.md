@@ -48,3 +48,11 @@ Ideias ainda sem escopo. Quando uma delas for escopada, vira um arquivo de inici
   **só depois do `bridge-enrichment` fechar de ponta a ponta** — a lógica de enriquecimento
   precisa estar provada em uma plataforma antes de virar molde para as outras. Quando entrar,
   é trabalho para a skill `add-platform`.
+- **Caminho para coluna nova em bronze/silver.** O `overwrite` do Delta recusa schema
+  diferente, e não havia como acrescentar coluna: acrescentar `is_published` ao
+  `silver/facebook_organic/posts` exigiu uma escrita pontual com `overwriteSchema`. O
+  `write_delta` agora tem `overwrite_schema`, desligado por default — ligado sempre, um
+  transform que deixasse de produzir uma coluna a apagaria da tabela em silêncio em vez de
+  falhar. Falta decidir se, nas camadas de overwrite full (onde o schema é derivado do
+  código, não contrato com histórico), o default certo não é o contrário, e onde mora o
+  passo de migração: hoje é script de sandbox, que não deixa rastro.

@@ -5,7 +5,9 @@ materializadas. Rode o medallion antes.
    do `content_daily`, com o mesmo total.
 2. **O dia reconstrói o total.** Para cada post e métrica: total do primeiro dia fotografado
    (quando o número do dia é desconhecido) + Σ números do dia = total do último dia.
-3. **Todo post do `content_daily` está no `content`** — a dimensão cobre o fato.
+3. **Todo post do `content_daily` que chegou ao lake está no `content`** — a dimensão cobre o
+   fato no que a extração entregou. Post que só existe em `post_insights` é completude, não
+   conservação (D7 em `docs/plans/organic.md`).
 
 Alcance da conta e dos posts não se comparam: o da conta é único e inclui anúncios.
 """
@@ -73,8 +75,30 @@ def test_daily_numbers_rebuild_total_per_post(spark):
         )
 
 
-def test_every_daily_post_is_in_content(spark):
+def test_every_extracted_daily_post_is_in_content(spark):
+    """Conservação, não completude: todo post do fato **que chegou ao lake** tem de estar na
+    dimensão.
+
+    A versão anterior pedia que *todo* post do fato estivesse na dimensão, e isso contradiz
+    "a extração nunca é garantidamente completa; o join não pode depender dela": post que só
+    existe em `post_insights`, sem registro em `post` em nenhuma foto, nunca teve atributo
+    para a dimensão guardar. Isso é completude da extração, e falhar aqui por causa dela
+    confunde os dois problemas que o `architecture.md` separa — a extração decide o que chega,
+    os joins decidem se o que chegou sobrevive.
+
+    Escopando pelo que existe no bronze, o teste continua exato (sem limiar) e pega para
+    sempre o que é nosso: fato e dimensão discordando de uma linha de origem que ambos viram.
+    """
     daily = _gold(spark, "content_daily").select("content_id").distinct()
     content = _gold(spark, "content").select("content_id")
+    extracted = (
+        _read(spark, "bronze", "facebook_organic/post")
+        .select(col("id").cast("string").alias("content_id"))
+        .distinct()
+    )
 
-    assert daily.join(content, "content_id", "left_anti").isEmpty()
+    orphans = daily.join(extracted, "content_id").join(content, "content_id", "left_anti")
+    assert orphans.isEmpty(), (
+        "posts com registro em `post` que o fato tem e a dimensão não: "
+        f"{[r['content_id'] for r in orphans.limit(5).collect()]}"
+    )

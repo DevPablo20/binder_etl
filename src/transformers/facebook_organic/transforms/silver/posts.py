@@ -1,6 +1,5 @@
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import (
-    coalesce,
     col,
     get_json_object,
     lit,
@@ -12,11 +11,22 @@ from src.transformers.snapshots import latest_per, local_date
 
 
 def transform(sources: dict[str, DataFrame]) -> DataFrame:
-    """Dimensão de post: a última foto de cada post publicado pela própria página.
+    """Dimensão de post: a última foto de cada post da própria página.
 
-    O `/feed` também traz posts de visitantes, posts em que a página foi marcada e posts não
-    publicados. `is_published` nulo só acontece em fotos de antes da seleção do campo — ali
-    não há como saber, e o post fica.
+    O `/feed` também traz posts de visitantes e posts em que a página foi marcada — esses não
+    são conteúdo da página, e o `from.id` os separa.
+
+    **`is_published` é atributo, não filtro.** Antes ele entrava no mesmo `AND` do `from.id`,
+    e isso juntava duas perguntas diferentes: *é nosso?* e *está visível?*. A segunda não
+    justifica apagar o post — `is_hidden` e `is_expired`, que são da mesma natureza, sempre
+    foram colunas. E filtrar fazia o fato e a dimensão discordarem da mesma linha de origem:
+    o `post_metrics_daily` sai de `post_insights` e nunca aplicou filtro nenhum, então a
+    métrica de um post despublicado sobrevivia e o atributo dele não (D7 em
+    `docs/plans/organic.md`). Despublicado não quer dizer que nunca foi publicado: os dois
+    casos medidos tinham milhares de reações.
+
+    `is_published` nulo só acontece em fotos de antes da seleção do campo, onde não há como
+    saber — fica nulo, sem virar `True`.
 
     `last_seen_date` é o último dia em que o post apareceu. Como o stream é full refresh,
     sumir da lista significa sair da página.
@@ -25,11 +35,9 @@ def transform(sources: dict[str, DataFrame]) -> DataFrame:
     last_seen = post.groupBy("id").agg(max_("snapshot_date").alias("last_seen_date"))
 
     latest = latest_per(post, "id").join(last_seen, "id", "left")
-    own_published = (get_json_object(col("from"), "$.id") == col("page_id")) & coalesce(
-        col("is_published"), lit(True)
-    )
+    own = get_json_object(col("from"), "$.id") == col("page_id")
 
-    return latest.filter(own_published).select(
+    return latest.filter(own).select(
         col("id").cast("string").alias("post_id"),
         col("page_id").cast("string").alias("page_id"),
         col("created_time").alias("created_at"),
@@ -38,6 +46,7 @@ def transform(sources: dict[str, DataFrame]) -> DataFrame:
         col("permalink_url"),
         col("status_type"),
         media_type(col("permalink_url"), col("status_type")).alias("media_type"),
+        col("is_published"),
         col("is_hidden"),
         col("is_expired"),
         col("full_picture"),

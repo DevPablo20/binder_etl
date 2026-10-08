@@ -1,8 +1,8 @@
 """Unitário e isolado (sem MinIO): a dimensão de posts no silver.
 
-Prova a última foto como dado atual, o filtro de posts da própria página publicados, o
-`last_seen_date` e o formato derivado do link e do `status_type` (o `attachments` do conector
-chega vazio).
+Prova a última foto como dado atual, o filtro por autoria (posts da própria página, sem olhar
+visibilidade), `is_published` carregado como atributo, o `last_seen_date` e o formato derivado
+do link e do `status_type` (o `attachments` do conector chega vazio).
 """
 from datetime import date, datetime, timezone
 
@@ -51,7 +51,8 @@ def test_latest_snapshot_wins_and_last_seen_is_tracked(spark):
     assert rows["p1_a"]["created_date"] == date(2026, 9, 29)  # 14:50 UTC = 11:50 em SP
 
 
-def test_keeps_only_published_posts_by_the_page(spark):
+def test_keeps_the_pages_own_posts_and_drops_other_authors(spark):
+    """O filtro responde uma pergunta só: *é conteúdo da página?* Visibilidade não entra."""
     at = _utc(2026, 9, 30, 4, 1)
     day = date(2026, 9, 29)
     rows = _run(
@@ -64,7 +65,31 @@ def test_keeps_only_published_posts_by_the_page(spark):
         ],
     )
 
-    assert set(rows) == {"p1_own", "p1_old_file"}
+    assert set(rows) == {"p1_own", "p1_draft", "p1_old_file"}
+
+
+def test_is_published_is_carried_not_filtered(spark):
+    """Despublicado é atributo, como `is_hidden` e `is_expired`.
+
+    Filtrar por ele fazia o fato e a dimensão discordarem da mesma linha de origem: o
+    `post_metrics_daily` sai de `post_insights` e nunca filtrou, então a métrica do post
+    despublicado sobrevivia e o atributo dele não (D7 em `docs/plans/organic.md`). Nulo
+    continua nulo — nas fotos antigas o campo não existia, e não há como afirmar.
+    """
+    at = _utc(2026, 9, 30, 4, 1)
+    day = date(2026, 9, 29)
+    rows = _run(
+        spark,
+        [
+            _row("p1_own", day, "", at),
+            _row("p1_draft", day, "", at, published=False),
+            _row("p1_old_file", day, "", at, published=None),
+        ],
+    )
+
+    assert rows["p1_own"]["is_published"] is True
+    assert rows["p1_draft"]["is_published"] is False
+    assert rows["p1_old_file"]["is_published"] is None
 
 
 def test_media_type_from_permalink_and_status(spark):
